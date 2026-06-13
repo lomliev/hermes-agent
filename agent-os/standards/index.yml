@@ -1,0 +1,21 @@
+cli:
+  slash-commands:
+    description: Central registry and dispatch rules for CLI and gateway slash commands
+gateway:
+  platform-adapters:
+    description: Plugin-first and built-in integration rules for messaging platform adapters
+global:
+  dependencies:
+    description: Exact dependency pinning, core dependency scope, and lockfile update rules
+plugins:
+  extension-points:
+    description: Plugin layout and registration patterns for tools, providers, and platforms
+python:
+  profile-paths:
+    description: Profile-aware Hermes home paths and hermetic test isolation patterns
+testing:
+  runner-and-hermeticity:
+    description: Canonical test runner, hermetic environment, and durable test design rules
+tools:
+  registration:
+    description: Built-in tool self-registration, schemas, availability checks, and dispatch conventions

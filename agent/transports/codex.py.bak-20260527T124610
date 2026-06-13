@@ -179,12 +179,6 @@ class ResponsesApiTransport(ProviderTransport):
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
-            elif is_codex_backend:
-                # ChatGPT Codex backend currently fails in the Hermes gateway
-                # when encrypted reasoning include / reasoning summary is requested.
-                # Keep normal answer generation and tool-calling, but do not request
-                # encrypted reasoning artifacts from this backend.
-                kwargs["include"] = []
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = ["reasoning.encrypted_content"]

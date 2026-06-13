@@ -404,6 +404,17 @@ def build_session_context_prompt(
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
+        _source_target_chat = _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
+        _source_target_thread = (
+            _hash_chat_id(context.source.thread_id)
+            if redact_pii and context.source.thread_id
+            else context.source.thread_id
+        )
+        if _source_target_thread and _source_target_thread != _source_target_chat:
+            _source_target = f"{context.source.platform.value}:{_source_target_chat}:{_source_target_thread}"
+        else:
+            _source_target = f"{context.source.platform.value}:{_source_target_chat}"
+        lines.append(f"- `\"{_source_target}\"` → This exact chat/thread via send_message")
 
     # Local always available
     lines.append(
@@ -417,6 +428,14 @@ def build_session_context_prompt(
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
+    lines.append("")
+    lines.append(
+        "**Cross-channel routing:** When you hand off a question or case to another "
+        "chat with `send_message`, the original requester usually cannot see the "
+        "destination chat. If a later message includes route-back context, or clearly "
+        "answers a routed request, send a concise status/update back to the return "
+        "target with `send_message` before treating the case as closed."
+    )
 
     return "\n".join(lines)
 

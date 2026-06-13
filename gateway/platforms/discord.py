@@ -85,6 +85,33 @@ def _clean_discord_id(entry: str) -> str:
     return entry.strip()
 
 
+def _prepend_route_back_context(
+    text: str,
+    *,
+    chat_id: str,
+    reply_to_message_id: str | None,
+) -> str:
+    """Inject return-target context when a user replies to a routed handoff."""
+    if not reply_to_message_id:
+        return text
+    try:
+        from gateway.routing_context import (
+            format_route_context_note,
+            lookup_outbound_route,
+        )
+        route = lookup_outbound_route(
+            platform="discord",
+            chat_id=str(chat_id or ""),
+            message_id=str(reply_to_message_id),
+        )
+        note = format_route_context_note(route)
+        if note:
+            return f"{note}\n\n{text}"
+    except Exception:
+        logger.debug("Failed to inject Discord route-back context", exc_info=True)
+    return text
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -4768,6 +4795,11 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+        event_text = _prepend_route_back_context(
+            event_text,
+            chat_id=str(effective_channel.id),
+            reply_to_message_id=reply_to_id,
+        )
 
         event = MessageEvent(
             text=event_text,

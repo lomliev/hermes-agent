@@ -17,6 +17,7 @@ from utils import atomic_json_write
 logger = logging.getLogger(__name__)
 
 DIRECTORY_PATH = get_hermes_home() / "channel_directory.json"
+_DISCORD_EXTERNAL_GENERAL_MARKETING_ID = "1282928816104276019"
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -244,6 +245,30 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 # Read / resolve
 # ---------------------------------------------------------------------------
 
+
+
+def _resolve_discord_state_alias(query: str) -> Optional[str]:
+    """Resolve SkyVision Next Discord aliases from local state, fail-closing #marketing.
+
+    The alias registry is ID-first operational metadata.  Plain "marketing" is
+    intentionally treated as ambiguous because Adventico also has an external
+    general #marketing channel (1282928816104276019); callers must use
+    marketing-growth / skyvision-marketing for the SkyVision Next lane.
+    """
+    if query == "marketing":
+        return None
+    alias_path = get_hermes_home() / "state" / "skyvision_next_discord_channel_alias_map_temporary.json"
+    try:
+        with open(alias_path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return None
+    for item in data.get("aliases", []):
+        if _normalize_channel_query(str(item.get("alias") or "")) == query:
+            channel_id = str(item.get("channel_id") or "").strip()
+            return channel_id or None
+    return None
+
 def load_directory() -> Dict[str, Any]:
     """Load the cached channel directory from disk."""
     if not DIRECTORY_PATH.exists():
@@ -284,12 +309,25 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     raw = name.strip()
     for ch in channels:
         if ch.get("id") == raw:
+            if platform_name == "discord" and raw == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+                return None
             return ch["id"]
 
     query = _normalize_channel_query(name)
 
+    if platform_name == "discord":
+        # Plain #marketing is an unmanaged external/general channel in Adventico.
+        # Do not let exact/prefix matching silently resolve it to marketing-growth.
+        if query == "marketing":
+            return None
+        alias_id = _resolve_discord_state_alias(query)
+        if alias_id:
+            return alias_id
+
     # 1. Exact name match, including the display labels shown by send_message(action="list")
     for ch in channels:
+        if platform_name == "discord" and ch.get("id") == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+            continue
         if _normalize_channel_query(ch["name"]) == query:
             return ch["id"]
         if _normalize_channel_query(_channel_target_name(platform_name, ch)) == query:
@@ -299,12 +337,18 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     if "/" in query:
         guild_part, ch_part = query.rsplit("/", 1)
         for ch in channels:
+            if platform_name == "discord" and ch.get("id") == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+                continue
             guild = ch.get("guild", "").strip().lower()
             if guild == guild_part and _normalize_channel_query(ch["name"]) == ch_part:
                 return ch["id"]
 
     # 3. Partial prefix match (only if unambiguous)
-    matches = [ch for ch in channels if _normalize_channel_query(ch["name"]).startswith(query)]
+    matches = [
+        ch for ch in channels
+        if not (platform_name == "discord" and ch.get("id") == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID)
+        and _normalize_channel_query(ch["name"]).startswith(query)
+    ]
     if len(matches) == 1:
         return matches[0]["id"]
 
@@ -339,10 +383,14 @@ def format_directory_for_display() -> str:
             for guild_name, guild_channels in sorted(guilds.items()):
                 lines.append(f"Discord ({guild_name}):")
                 for ch in sorted(guild_channels, key=lambda c: c["name"]):
+                    if ch.get("id") == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+                        continue
                     lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
             if dms:
                 lines.append("Discord (DMs):")
                 for ch in dms:
+                    if ch.get("id") == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+                        continue
                     lines.append(f"  discord:{_channel_target_name(plat_name, ch)}")
             lines.append("")
         else:

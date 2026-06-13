@@ -1,6 +1,6 @@
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 import sys
 
 import pytest
@@ -42,7 +42,25 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+from gateway.platforms.discord import DiscordAdapter, _prepend_route_back_context  # noqa: E402
+
+
+def test_prepend_route_back_context_for_replies_to_routed_messages():
+    route = {
+        "return_target": "discord:1509473981860941844",
+        "return_label": "Ivs discount thread",
+        "return_user": "Ivs",
+    }
+    with patch("gateway.routing_context.lookup_outbound_route", return_value=route):
+        text = _prepend_route_back_context(
+            "оправено е",
+            chat_id="1504852408227069993",
+            reply_to_message_id="1510000000000000000",
+        )
+
+    assert text.startswith("[Route-back context:")
+    assert "Return target: `discord:1509473981860941844`" in text
+    assert text.endswith("\n\nоправено е")
 
 
 @pytest.mark.asyncio

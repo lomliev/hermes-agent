@@ -13,7 +13,8 @@ import re
 import ssl
 import time
 from email.utils import formatdate
-from typing import Dict, Optional
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 from agent.redact import redact_sensitive_text
 
@@ -130,8 +131,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms."
+                "enum": ["send", "list", "list_threads", "resolve_thread", "create_thread", "send_to_thread", "rename_thread_by_id", "read_channel_messages", "read_thread_messages", "list_category_channels", "rename_channel_by_id", "create_text_channel_in_category"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns available targets. Discord-only bounded thread actions: 'list_threads', 'resolve_thread', 'create_thread', 'send_to_thread', 'rename_thread_by_id', 'read_channel_messages', 'read_thread_messages'. Discord-only bounded channel admin actions: 'list_category_channels', 'rename_channel_by_id', 'create_text_channel_in_category'."
             },
             "target": {
                 "type": "string",
@@ -139,7 +140,67 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment. For Discord colleague notifications, use @Alex/@Алекс and @Ivo/@Иво; known aliases are converted to real Discord mentions."
+            },
+            "parent_channel": {
+                "type": "string",
+                "description": "Discord thread actions only: approved parent channel name/target/id (e.g. discord:#sky-next-backend-api-monolith or 1504852408227069993)."
+            },
+            "thread_id": {
+                "type": "string",
+                "description": "Discord send_to_thread/rename_thread_by_id/read_thread_messages only: Discord thread/channel ID."
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Discord read_*_messages only: number of messages to fetch, 1-100 (default 50)."
+            },
+            "before_message_id": {
+                "type": "string",
+                "description": "Discord read_*_messages only: fetch messages before this message ID for pagination."
+            },
+            "after_message_id": {
+                "type": "string",
+                "description": "Discord read_*_messages only: fetch messages after this message ID."
+            },
+            "around_message_id": {
+                "type": "string",
+                "description": "Discord read_*_messages only: fetch messages around this message ID."
+            },
+            "parent_channel_id": {
+                "type": "string",
+                "description": "Discord rename_thread_by_id only: approved SkyVision Next parent channel ID."
+            },
+            "new_title": {
+                "type": "string",
+                "description": "Discord rename_thread_by_id only: replacement thread title, non-empty and within Discord title limits."
+            },
+            "title": {
+                "type": "string",
+                "description": "Discord create_thread/resolve_thread only: thread title."
+            },
+            "query": {
+                "type": "string",
+                "description": "Discord list_threads/resolve_thread only: incident ID, title fragment, or search query."
+            },
+            "starter_message": {
+                "type": "string",
+                "description": "Discord create_thread only: optional first message to post inside the created thread."
+            },
+            "category_id": {
+                "type": "string",
+                "description": "Discord bounded channel admin only: approved SkyVision Next category ID. Required for list_category_channels/create_text_channel_in_category."
+            },
+            "channel_id": {
+                "type": "string",
+                "description": "Discord bounded channel admin only: existing channel ID inside the approved SkyVision Next category. Required for rename_channel_by_id."
+            },
+            "new_name": {
+                "type": "string",
+                "description": "Discord bounded channel admin only: approved canonical replacement channel name for rename_channel_by_id."
+            },
+            "name": {
+                "type": "string",
+                "description": "Discord bounded channel admin only: approved text channel name for create_text_channel_in_category."
             }
         },
         "required": []
@@ -154,6 +215,12 @@ def send_message_tool(args, **kw):
     if action == "list":
         return _handle_list()
 
+    if action in {"list_threads", "resolve_thread", "create_thread", "send_to_thread", "rename_thread_by_id", "read_channel_messages", "read_thread_messages"}:
+        return _handle_discord_thread_action(args, action)
+
+    if action in {"list_category_channels", "rename_channel_by_id", "create_text_channel_in_category"}:
+        return _handle_discord_channel_admin_action(args, action)
+
     return _handle_send(args)
 
 
@@ -164,6 +231,824 @@ def _handle_list():
         return json.dumps({"targets": format_directory_for_display()})
     except Exception as e:
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
+
+
+_DISCORD_SKYVISION_NEXT_CANONICAL_LANES = {
+    "control-tower": "1504852355588423801",
+    "backend": "1504852408227069993",
+    "frontend": "1504852444407140402",
+    "devops": "1504852485083496561",
+    "booking-ops": "1504852553031221391",
+    "business-accounting-legal": "1504852628373373028",
+    "nasi-ai-ops": "1505499746939174993",
+    "chatbot": "1507239516409167942",
+    "marketing-growth": "1507239177350283274",
+    "suppliers": "1507239385010016308",
+    "chatbot-web-monitoring": "1510888721614901358",
+}
+_DISCORD_SKYVISION_NEXT_ALIAS_LANES = {
+    "sky-next-control-tower": "1504852355588423801",
+    "sky-next-backend-api-monolith": "1504852408227069993",
+    "sky-next-frontend": "1504852444407140402",
+    "sky-next-devops-gitlab-cloudflare": "1504852485083496561",
+    "sky-next-booking-ops": "1504852553031221391",
+    "sky-next-business-accounting-legal": "1504852628373373028",
+    "sky-next-business-accounts": "1504852628373373028",
+    "sky-next-nasi-ai-ops": "1505499746939174993",
+    "chatbot-ops": "1507239516409167942",
+    "skyvision-marketing": "1507239177350283274",
+    "supplier-onboarding": "1507239385010016308",
+    "suppliers-onboarding": "1507239385010016308",
+    "skyvision-chatbot-monitoring": "1510888721614901358",
+}
+# Active bounded Discord thread lanes: final 10 SkyVision Next channels plus
+# explicitly safe legacy aliases. Plain #marketing is intentionally excluded: it
+# is an external/general channel and must not auto-route to #marketing-growth.
+_DISCORD_APPROVED_THREAD_LANES = {
+    **_DISCORD_SKYVISION_NEXT_CANONICAL_LANES,
+    **_DISCORD_SKYVISION_NEXT_ALIAS_LANES,
+}
+_DISCORD_APPROVED_THREAD_IDS = frozenset(_DISCORD_SKYVISION_NEXT_CANONICAL_LANES.values())
+_DISCORD_APPROVED_THREAD_RENAME_PARENT_IDS = _DISCORD_APPROVED_THREAD_IDS
+_DISCORD_APPROVED_HISTORY_PARENT_IDS = _DISCORD_APPROVED_THREAD_IDS
+_DISCORD_EXTERNAL_GENERAL_MARKETING_ID = "1282928816104276019"
+_DISCORD_HISTORY_LIMIT_DEFAULT = 50
+_DISCORD_HISTORY_LIMIT_MAX = 100
+_DISCORD_THREAD_TITLE_MAX_LENGTH = 100
+_DISCORD_CONTROL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_DISCORD_USER_MENTION_ALIASES = {
+    "alex": "1282940511962791959",
+    "aleks": "1282940511962791959",
+    "алекс": "1282940511962791959",
+    "ivo": "1283039346295050271",
+    "ivo popov": "1283039346295050271",
+    "иво": "1283039346295050271",
+    "иво попов": "1283039346295050271",
+    "ивчо": "1283039346295050271",
+    "ivs": "1391703330711142472",
+    "ivelina": "1391703330711142472",
+    "ивс": "1391703330711142472",
+    "ивелина": "1391703330711142472",
+}
+
+
+def _discord_alias_to_pattern(alias: str) -> str:
+    """Build a regex fragment for an @alias, tolerating spaces in full names."""
+    return r"\s+".join(re.escape(part) for part in alias.split())
+
+
+def _discord_render_user_mentions(message: str) -> tuple[str, list[str]]:
+    """Convert known Discord @name aliases to mention tokens and return ping IDs.
+
+    Discord only notifies users for real mention tokens like ``<@123>``. Plain
+    text such as ``@Alex`` looks mention-like to humans but does not ping. Keep
+    the conversion deliberately small and explicit so arbitrary LLM text cannot
+    become a broad notification surface.
+    """
+    rendered = str(message or "")
+    user_ids: list[str] = []
+
+    def remember(user_id: str) -> None:
+        if user_id and user_id not in user_ids:
+            user_ids.append(user_id)
+
+    for user_id in re.findall(r"<@!?(\d{15,25})>", rendered):
+        remember(user_id)
+
+    sorted_aliases = sorted(
+        _DISCORD_USER_MENTION_ALIASES.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+
+    def alias_replacer(match: re.Match[str]) -> str:
+        prefix = match.group("prefix") or ""
+        alias = re.sub(r"\s+", " ", match.group("alias")).casefold()
+        user_id = _DISCORD_USER_MENTION_ALIASES.get(alias)
+        if not user_id:
+            return match.group(0)
+        remember(user_id)
+        return f"{prefix}<@{user_id}>"
+
+    # Common handoff style: "Иво/Alex, моля..." at the start of a Discord
+    # message. Treat only the opening addressee segment as notification intent;
+    # bare names elsewhere remain plain text.
+    leading_match = re.match(r"^([^\n,:\u2014-]{2,80})([,:\u2014-]\s+)", rendered)
+    if leading_match:
+        leading = leading_match.group(1)
+        delimiter = leading_match.group(2)
+        if re.search(r"\s*(?:/|,|&|\+|\bи\b|\band\b)\s*", leading, re.IGNORECASE):
+            alias_names = "|".join(_discord_alias_to_pattern(alias) for alias, _uid in sorted_aliases)
+            leading_pattern = re.compile(
+                rf"(?P<prefix>^|[/,&+\s]+)(?P<alias>{alias_names})(?=$|[/,&+\s]+)",
+                re.IGNORECASE,
+            )
+            converted = leading_pattern.sub(alias_replacer, leading)
+            if converted != leading:
+                rendered = converted + delimiter + rendered[leading_match.end():]
+
+    for alias, user_id in sorted_aliases:
+        pattern = re.compile(
+            rf"(?<![\w<])@{_discord_alias_to_pattern(alias)}(?![\w-])",
+            re.IGNORECASE,
+        )
+
+        def replace(match: re.Match[str], uid: str = user_id) -> str:
+            remember(uid)
+            return f"<@{uid}>"
+
+        rendered = pattern.sub(replace, rendered)
+
+    return rendered, user_ids
+
+
+def _discord_message_payload(content: str, *, attachments: list[dict[str, str]] | None = None) -> dict[str, Any]:
+    rendered, user_ids = _discord_render_user_mentions(content)
+    allowed_mentions: dict[str, Any] = {"parse": []}
+    if user_ids:
+        allowed_mentions["users"] = user_ids
+    payload: dict[str, Any] = {
+        "content": rendered,
+        "allowed_mentions": allowed_mentions,
+    }
+    if attachments is not None:
+        payload["attachments"] = attachments
+    return payload
+
+
+_DISCORD_APPROVED_CHANNEL_RENAME_NAMES = frozenset({
+    "control-tower",
+    "backend",
+    "frontend",
+    "devops",
+    "booking-ops",
+    "business-accounting-legal",
+    "nasi-ai-ops",
+})
+_DISCORD_APPROVED_CHANNEL_CREATE_NAMES = frozenset({"chatbot", "marketing-growth", "suppliers"})
+_DISCORD_APPROVED_CHANNEL_ADMIN_NAMES = _DISCORD_APPROVED_CHANNEL_RENAME_NAMES | _DISCORD_APPROVED_CHANNEL_CREATE_NAMES
+_DISCORD_CHANNEL_TYPE_GUILD_TEXT = 0
+_DISCORD_CHANNEL_TYPE_GUILD_CATEGORY = 4
+
+
+def _discord_admin_error(message: str) -> str:
+    return json.dumps(_error(message))
+
+
+def _normalize_discord_channel_name(value: str | None) -> str:
+    return (value or "").strip().lstrip("#").lower()
+
+
+def _get_approved_skyvision_next_category_id(pconfig) -> tuple[str | None, str | None]:
+    """Read the single approved SkyVision Next category ID from config/env.
+
+    The tool is intentionally fail-closed: without an explicit category ID it
+    can neither list children nor mutate channels. This avoids exposing a
+    generic Discord admin surface when local metadata lacks category context.
+    """
+    extra = getattr(pconfig, "extra", {}) or {}
+    value = (
+        extra.get("skyvision_next_category_id")
+        or extra.get("skyvision_next_category")
+        or os.getenv("DISCORD_SKYVISION_NEXT_CATEGORY_ID")
+        or ""
+    )
+    value = str(value).strip()
+    if not value:
+        return None, "SkyVision Next category ID is not configured; set discord.skyvision_next_category_id or DISCORD_SKYVISION_NEXT_CATEGORY_ID before using bounded channel admin actions."
+    if not value.isdigit():
+        return None, "Configured SkyVision Next category ID is invalid."
+    return value, None
+
+
+def _require_approved_category_id(requested_category_id: str | None, approved_category_id: str) -> tuple[str | None, str | None]:
+    requested = str(requested_category_id or approved_category_id or "").strip()
+    if not requested:
+        return None, "category_id is required for this bounded Discord channel admin action."
+    if requested != approved_category_id:
+        return None, "Discord channel admin action rejected: category outside approved SkyVision Next category."
+    return requested, None
+
+
+async def _discord_get_channel(token: str, channel_id: str) -> tuple[dict[str, Any] | None, str | None]:
+    data, err = await _discord_api_request(token, "GET", f"/channels/{channel_id}")
+    if err:
+        return None, err
+    if not isinstance(data, dict):
+        return None, "Discord channel lookup returned unexpected response."
+    return data, None
+
+
+async def _discord_list_category_channels(token: str, category_id: str) -> tuple[list[dict[str, Any]], str | None]:
+    category, err = await _discord_get_channel(token, category_id)
+    if err:
+        return [], err
+    if category.get("type") != _DISCORD_CHANNEL_TYPE_GUILD_CATEGORY:
+        return [], "Approved SkyVision Next category ID does not resolve to a Discord category."
+    guild_id = str(category.get("guild_id") or "")
+    if not guild_id:
+        return [], "Discord category response did not include guild_id."
+    data, err = await _discord_api_request(token, "GET", f"/guilds/{guild_id}/channels")
+    if err:
+        return [], err
+    if not isinstance(data, list):
+        return [], "Discord guild channel listing returned unexpected response."
+    children = []
+    for ch in data:
+        if not isinstance(ch, dict):
+            continue
+        if str(ch.get("parent_id") or "") != category_id:
+            continue
+        children.append({
+            "channel_id": str(ch.get("id") or ""),
+            "name": str(ch.get("name") or ""),
+            "type": ch.get("type"),
+            "parent_id": str(ch.get("parent_id") or ""),
+            "position": ch.get("position"),
+        })
+    children.sort(key=lambda item: (item.get("position") is None, item.get("position") or 0, item.get("name") or ""))
+    return children, None
+
+
+def _validate_channel_admin_name(name: str | None, *, for_create: bool) -> tuple[str | None, str | None]:
+    normalized = _normalize_discord_channel_name(name)
+    if not normalized:
+        return None, "name/new_name is required for this bounded Discord channel admin action."
+    allowed = _DISCORD_APPROVED_CHANNEL_CREATE_NAMES if for_create else _DISCORD_APPROVED_CHANNEL_RENAME_NAMES
+    if normalized not in allowed:
+        allowed_text = ", ".join(f"#{item}" for item in sorted(allowed))
+        return None, f"Discord channel admin action rejected: channel name is outside approved SkyVision Next lane names ({allowed_text})."
+    return normalized, None
+
+
+def _validate_channel_in_approved_category(channel: dict[str, Any], approved_category_id: str) -> str | None:
+    if str(channel.get("parent_id") or "") != approved_category_id:
+        return "Discord channel admin action rejected: channel ID is outside approved SkyVision Next category."
+    if channel.get("type") != _DISCORD_CHANNEL_TYPE_GUILD_TEXT:
+        return "Discord channel admin action rejected: only text channels inside SkyVision Next category are allowed."
+    return None
+
+
+def _handle_discord_channel_admin_action(args: dict[str, Any], action: str) -> str:
+    """Bounded SkyVision Next Discord channel admin tooling.
+
+    Exposes only three tightly-scoped actions and performs live category/channel
+    validation before any mutation. No delete, permission, role, message, thread,
+    webhook, or broad guild admin operations are reachable through this path.
+    """
+    pconfig, cfg_error = _get_discord_platform_config()
+    if cfg_error:
+        return _discord_admin_error(cfg_error)
+    token = pconfig.token
+    approved_category_id, category_error = _get_approved_skyvision_next_category_id(pconfig)
+    if category_error:
+        return _discord_admin_error(category_error)
+    category_id, category_error = _require_approved_category_id(args.get("category_id"), approved_category_id)
+    if category_error:
+        return _discord_admin_error(category_error)
+
+    from model_tools import _run_async
+
+    try:
+        if action == "list_category_channels":
+            channels, err = _run_async(_discord_list_category_channels(token, category_id))
+            if err:
+                return _discord_admin_error(err)
+            return json.dumps({"success": True, "platform": "discord", "category_id": category_id, "channels": channels, "count": len(channels)})
+
+        if action == "rename_channel_by_id":
+            channel_id = str(args.get("channel_id") or "").strip()
+            if not channel_id:
+                return _discord_admin_error("channel_id is required for rename_channel_by_id.")
+            new_name, name_error = _validate_channel_admin_name(args.get("new_name") or args.get("name"), for_create=False)
+            if name_error:
+                return _discord_admin_error(name_error)
+            channel, err = _run_async(_discord_get_channel(token, channel_id))
+            if err:
+                return _discord_admin_error(err)
+            validation_error = _validate_channel_in_approved_category(channel, category_id)
+            if validation_error:
+                return _discord_admin_error(validation_error)
+            updated, err = _run_async(_discord_api_request(token, "PATCH", f"/channels/{channel_id}", json_body={"name": new_name}))
+            if err:
+                return _discord_admin_error(err)
+            if not isinstance(updated, dict):
+                return _discord_admin_error("Discord channel rename returned unexpected response.")
+            return json.dumps({
+                "success": True,
+                "platform": "discord",
+                "action": action,
+                "category_id": category_id,
+                "channel_id": str(updated.get("id") or channel_id),
+                "old_name": str(channel.get("name") or ""),
+                "new_name": str(updated.get("name") or new_name),
+            })
+
+        if action == "create_text_channel_in_category":
+            name, name_error = _validate_channel_admin_name(args.get("name") or args.get("new_name"), for_create=True)
+            if name_error:
+                return _discord_admin_error(name_error)
+            category, err = _run_async(_discord_get_channel(token, category_id))
+            if err:
+                return _discord_admin_error(err)
+            if not isinstance(category, dict) or category.get("type") != _DISCORD_CHANNEL_TYPE_GUILD_CATEGORY:
+                return _discord_admin_error("Approved SkyVision Next category ID does not resolve to a Discord category.")
+            guild_id = str(category.get("guild_id") or "")
+            if not guild_id:
+                return _discord_admin_error("Discord category response did not include guild_id.")
+            existing, err = _run_async(_discord_list_category_channels(token, category_id))
+            if err:
+                return _discord_admin_error(err)
+            for ch in existing:
+                if _normalize_discord_channel_name(ch.get("name")) == name:
+                    return json.dumps({
+                        "success": True,
+                        "platform": "discord",
+                        "action": action,
+                        "category_id": category_id,
+                        "channel_id": ch.get("channel_id"),
+                        "name": name,
+                        "existed": True,
+                        "note": "Exact channel already exists in approved category; no duplicate channel created.",
+                    })
+            body = {"name": name, "type": _DISCORD_CHANNEL_TYPE_GUILD_TEXT, "parent_id": category_id}
+            created, err = _run_async(_discord_api_request(token, "POST", f"/guilds/{guild_id}/channels", json_body=body))
+            if err:
+                return _discord_admin_error(err)
+            if not isinstance(created, dict) or not created.get("id"):
+                return _discord_admin_error("Discord channel creation returned unexpected response.")
+            if str(created.get("parent_id") or "") != category_id or created.get("type") != _DISCORD_CHANNEL_TYPE_GUILD_TEXT:
+                return _discord_admin_error("Discord channel creation returned a channel outside the approved category/text-channel scope.")
+            return json.dumps({
+                "success": True,
+                "platform": "discord",
+                "action": action,
+                "category_id": category_id,
+                "channel_id": str(created.get("id")),
+                "name": str(created.get("name") or name),
+                "existed": False,
+            })
+    except Exception as exc:
+        return _discord_admin_error(f"Discord bounded channel admin action failed: {exc}")
+
+    return _discord_admin_error(f"Unsupported Discord bounded channel admin action: {action}")
+
+
+def _discord_thread_error(message: str) -> str:
+    return json.dumps(_error(message))
+
+
+def _get_discord_platform_config():
+    """Return the configured Discord PlatformConfig without exposing secrets."""
+    try:
+        from gateway.config import Platform, load_gateway_config
+        config = load_gateway_config()
+        pconfig = config.platforms.get(Platform.DISCORD)
+    except Exception as exc:
+        return None, f"Failed to load gateway config: {exc}"
+    if not pconfig or not getattr(pconfig, "enabled", False):
+        return None, "Discord platform is not enabled in the active gateway config."
+    if not (getattr(pconfig, "token", "") or "").strip():
+        return None, "Discord bot token is not available in this runtime."
+    return pconfig, None
+
+
+def _resolve_approved_discord_parent_channel(raw: str | None) -> tuple[str | None, str | None]:
+    """Resolve a parent channel input and enforce SkyVision-approved lanes only."""
+    value = (raw or "").strip()
+    if not value:
+        return None, "parent_channel or target is required for this Discord thread action."
+    if value.startswith("discord:"):
+        value = value.split(":", 1)[1].strip()
+    if value == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+        return None, "#marketing is external/general and unmanaged; use #marketing-growth only for explicit SkyVision Next marketing lane context."
+    if value in _DISCORD_APPROVED_THREAD_IDS:
+        return value, None
+    name = value.lstrip("#").strip().lower()
+    if name == "marketing":
+        return None, "Ambiguous #marketing is external/general and unmanaged; use #marketing-growth for the SkyVision Next marketing lane."
+    if name in _DISCORD_APPROVED_THREAD_LANES:
+        return _DISCORD_APPROVED_THREAD_LANES[name], None
+    try:
+        from gateway.channel_directory import resolve_channel_name
+        resolved = resolve_channel_name("discord", value)
+        if resolved:
+            channel_id, _thread_id, explicit = _parse_target_ref("discord", resolved)
+            if channel_id == _DISCORD_EXTERNAL_GENERAL_MARKETING_ID:
+                return None, "#marketing is external/general and unmanaged; use #marketing-growth only for explicit SkyVision Next marketing lane context."
+            if explicit and channel_id in _DISCORD_APPROVED_THREAD_IDS:
+                return channel_id, None
+    except Exception:
+        pass
+    allowed = ", ".join(f"#{name}" for name in sorted(_DISCORD_APPROVED_THREAD_LANES))
+    return None, f"Discord thread tooling is limited to approved internal lanes only: {allowed}."
+
+def _validate_discord_snowflake(value: str | None, field_name: str) -> tuple[str | None, str | None]:
+    snowflake = str(value or "").strip()
+    if not snowflake:
+        return None, f"{field_name} is required for rename_thread_by_id."
+    if not snowflake.isdigit():
+        return None, f"{field_name} must be a numeric Discord snowflake."
+    return snowflake, None
+
+
+def _validate_thread_rename_parent_id(value: str | None) -> tuple[str | None, str | None]:
+    parent_id, error = _validate_discord_snowflake(value, "parent_channel_id")
+    if error:
+        return None, error
+    if parent_id not in _DISCORD_APPROVED_THREAD_RENAME_PARENT_IDS:
+        allowed = ", ".join(sorted(_DISCORD_APPROVED_THREAD_RENAME_PARENT_IDS))
+        return None, f"Discord thread rename rejected: parent_channel_id must be an approved SkyVision Next lane ({allowed})."
+    return parent_id, None
+
+
+def _validate_discord_history_limit(value: Any) -> tuple[int | None, str | None]:
+    if value in (None, ""):
+        return _DISCORD_HISTORY_LIMIT_DEFAULT, None
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return None, "limit must be an integer between 1 and 100."
+    if limit < 1 or limit > _DISCORD_HISTORY_LIMIT_MAX:
+        return None, "limit must be between 1 and 100."
+    return limit, None
+
+
+def _build_discord_messages_path(channel_id: str, args: dict[str, Any]) -> tuple[str | None, str | None]:
+    limit, limit_error = _validate_discord_history_limit(args.get("limit"))
+    if limit_error:
+        return None, limit_error
+    assert limit is not None
+    query = [f"limit={limit}"]
+    cursor_fields = [
+        ("before", args.get("before_message_id")),
+        ("after", args.get("after_message_id")),
+        ("around", args.get("around_message_id")),
+    ]
+    supplied = [(name, str(value).strip()) for name, value in cursor_fields if str(value or "").strip()]
+    if len(supplied) > 1:
+        return None, "Use at most one of before_message_id, after_message_id, or around_message_id."
+    for name, message_id in supplied:
+        if not message_id.isdigit():
+            return None, f"{name}_message_id must be a numeric Discord snowflake."
+        query.append(f"{name}={message_id}")
+    return f"/channels/{channel_id}/messages?{'&'.join(query)}", None
+
+
+def _format_discord_history_message(raw: dict[str, Any]) -> dict[str, Any]:
+    author = raw.get("author") or {}
+    attachments = raw.get("attachments") or []
+    embeds = raw.get("embeds") or []
+    return {
+        "id": str(raw.get("id") or ""),
+        "timestamp": raw.get("timestamp"),
+        "author": {
+            "id": str(author.get("id") or ""),
+            "username": str(author.get("username") or ""),
+            "global_name": author.get("global_name"),
+            "bot": bool(author.get("bot")),
+        },
+        "content": str(raw.get("content") or ""),
+        "mentions": [str((m or {}).get("id") or "") for m in (raw.get("mentions") or []) if isinstance(m, dict)],
+        "attachments": [
+            {
+                "id": str((att or {}).get("id") or ""),
+                "filename": str((att or {}).get("filename") or ""),
+                "url": str((att or {}).get("url") or ""),
+                "content_type": (att or {}).get("content_type"),
+            }
+            for att in attachments
+            if isinstance(att, dict)
+        ],
+        "embeds_count": len(embeds) if isinstance(embeds, list) else 0,
+        "referenced_message_id": str((raw.get("referenced_message") or {}).get("id") or "") if isinstance(raw.get("referenced_message"), dict) else None,
+    }
+
+
+async def _discord_read_messages(token: str, channel_id: str, args: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
+    path, path_error = _build_discord_messages_path(channel_id, args)
+    if path_error:
+        return [], path_error
+    assert path is not None
+    data, err = await _discord_api_request(token, "GET", path)
+    if err:
+        return [], err
+    if not isinstance(data, list):
+        return [], "Discord messages lookup returned unexpected response."
+    messages = [_format_discord_history_message(item) for item in data if isinstance(item, dict)]
+    messages.reverse()  # Present chronologically; Discord REST returns newest first.
+    return messages, None
+
+
+def _validate_thread_rename_title(value: str | None) -> tuple[str | None, str | None]:
+    raw = str(value or "")
+    title = raw.strip()
+    if not title:
+        return None, "new_title is required for rename_thread_by_id."
+    if "\n" in raw or "\r" in raw:
+        return None, "new_title must not contain newlines."
+    if _DISCORD_CONTROL_CHAR_RE.search(raw):
+        return None, "new_title must not contain suspicious control characters."
+    if len(title) > _DISCORD_THREAD_TITLE_MAX_LENGTH:
+        return None, f"new_title must be {_DISCORD_THREAD_TITLE_MAX_LENGTH} characters or fewer."
+    return title, None
+
+
+def _validate_thread_can_be_renamed(thread: dict[str, Any], parent_channel_id: str) -> tuple[str | None, str | None]:
+    if thread.get("type") not in {10, 11, 12}:
+        return None, "Discord thread rename rejected: target channel is not a thread."
+    actual_parent_id = str(thread.get("parent_id") or "")
+    if actual_parent_id != parent_channel_id:
+        return None, "Discord thread rename rejected: thread.parent_id does not match approved parent_channel_id."
+    metadata = thread.get("thread_metadata") or {}
+    if metadata.get("archived") or metadata.get("locked"):
+        return None, "Discord thread rename rejected: thread is archived or locked."
+    return actual_parent_id, None
+
+
+async def _discord_api_request(token: str, method: str, path: str, *, json_body: dict[str, Any] | None = None) -> tuple[dict[str, Any] | list[Any] | None, str | None]:
+    """Small Discord REST helper that never returns or logs the token."""
+    try:
+        import aiohttp
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        headers = {"Authorization": f"Bot {token}", "Content-Type": "application/json"}
+        url = f"https://discord.com/api/v10{path}"
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            async with session.request(method, url, headers=headers, json=json_body, **_req_kw) as resp:
+                if resp.status == 204:
+                    return None, None
+                text = await resp.text()
+                if resp.status not in {200, 201}:
+                    return None, _sanitize_error_text(f"Discord API error ({resp.status}): {text}")
+                try:
+                    return json.loads(text), None
+                except Exception:
+                    return None, f"Discord API returned non-JSON response ({resp.status})."
+    except Exception as exc:
+        return None, _sanitize_error_text(f"Discord API request failed: {exc}")
+
+
+async def _discord_get_thread_info(token: str, thread_id: str) -> tuple[dict[str, Any] | None, str | None]:
+    data, err = await _discord_api_request(token, "GET", f"/channels/{thread_id}")
+    if err:
+        return None, err
+    if not isinstance(data, dict):
+        return None, "Discord thread lookup returned unexpected response."
+    parent_id = str(data.get("parent_id") or "")
+    if parent_id not in _DISCORD_APPROVED_THREAD_IDS:
+        return None, "Resolved Discord thread is outside approved internal lanes."
+    if data.get("type") not in {10, 11, 12}:
+        return None, "Resolved Discord channel is not a thread."
+    return data, None
+
+
+async def _discord_list_threads(token: str, parent_channel_id: str, query: str | None = None) -> tuple[list[dict[str, Any]], str | None]:
+    """List active/recent public archived threads for one approved parent channel."""
+    parent_info, parent_err = await _discord_api_request(token, "GET", f"/channels/{parent_channel_id}")
+    if parent_err:
+        return [], parent_err
+    guild_id = str((parent_info or {}).get("guild_id") or "") if isinstance(parent_info, dict) else ""
+    paths = []
+    if guild_id:
+        paths.append(f"/guilds/{guild_id}/threads/active")
+    paths.append(f"/channels/{parent_channel_id}/threads/archived/public?limit=50")
+    seen: set[str] = set()
+    matches: list[dict[str, Any]] = []
+    q = (query or "").casefold().strip()
+    warnings: list[str] = []
+    for path in paths:
+        data, err = await _discord_api_request(token, "GET", path)
+        if err:
+            # Some Discord channel types/permission combinations expose active
+            # thread listing but return 404 for archived-public listing. Keep
+            # list/resolve usable without treating that best-effort archive
+            # probe as a hard failure.
+            if "/threads/archived/public" in path and "Discord API error (404)" in err:
+                warnings.append("archived public thread listing unavailable for this channel/runtime")
+                continue
+            return [], err
+        threads = []
+        if isinstance(data, dict):
+            threads = data.get("threads") or []
+        for thread in threads:
+            tid = str(thread.get("id") or "")
+            title = str(thread.get("name") or "")
+            thread_parent_id = str(thread.get("parent_id") or parent_channel_id)
+            if thread_parent_id != parent_channel_id:
+                continue
+            if not tid or tid in seen:
+                continue
+            if q and q not in title.casefold() and q not in tid:
+                continue
+            seen.add(tid)
+            matches.append({
+                "thread_id": tid,
+                "title": title,
+                "parent_channel_id": thread_parent_id,
+                "archived": bool((thread.get("thread_metadata") or {}).get("archived")),
+                "locked": bool((thread.get("thread_metadata") or {}).get("locked")),
+            })
+    if warnings:
+        for item in matches:
+            item.setdefault("warnings", warnings)
+    return matches, None
+
+
+def _handle_discord_thread_action(args: dict[str, Any], action: str) -> str:
+    """Bounded Discord thread tooling exposed through send_message."""
+    pconfig, cfg_error = _get_discord_platform_config()
+    if cfg_error:
+        return _discord_thread_error(cfg_error)
+    token = pconfig.token
+    assert token is not None
+    from model_tools import _run_async
+
+    try:
+        if action in {"list_threads", "resolve_thread", "create_thread"}:
+            parent_raw = args.get("parent_channel") or args.get("target")
+            parent_id, parent_error = _resolve_approved_discord_parent_channel(parent_raw)
+            if parent_error:
+                return _discord_thread_error(parent_error)
+
+        if action == "list_threads":
+            query = args.get("query") or args.get("title")
+            threads, err = _run_async(_discord_list_threads(token, parent_id, query))
+            if err:
+                return _discord_thread_error(err)
+            return json.dumps({"success": True, "platform": "discord", "parent_channel_id": parent_id, "threads": threads, "count": len(threads)})
+
+        if action == "resolve_thread":
+            query = args.get("query") or args.get("title")
+            if not (query or "").strip():
+                return _discord_thread_error("query or title is required for resolve_thread.")
+            threads, err = _run_async(_discord_list_threads(token, parent_id, query))
+            if err:
+                return _discord_thread_error(err)
+            exact = [t for t in threads if t.get("title") == query]
+            chosen = exact[0] if len(exact) == 1 else (threads[0] if len(threads) == 1 else None)
+            return json.dumps({"success": True, "platform": "discord", "parent_channel_id": parent_id, "thread": chosen, "matches": threads, "count": len(threads)})
+
+        if action == "create_thread":
+            title = (args.get("title") or "").strip()
+            if not title:
+                return _discord_thread_error("title is required for create_thread.")
+            existing, err = _run_async(_discord_list_threads(token, parent_id, title))
+            if err:
+                return _discord_thread_error(err)
+            exact_existing = [t for t in existing if t.get("title") == title]
+            if exact_existing:
+                return json.dumps({
+                    "success": True,
+                    "platform": "discord",
+                    "parent_channel_id": parent_id,
+                    "thread_id": exact_existing[0]["thread_id"],
+                    "existed": True,
+                    "starter_message_id": None,
+                    "note": "Exact thread already exists; no duplicate thread or starter message posted.",
+                })
+            body = {"name": title, "auto_archive_duration": int(args.get("auto_archive_duration") or 10080), "type": 11}
+            thread, err = _run_async(_discord_api_request(token, "POST", f"/channels/{parent_id}/threads", json_body=body))
+            if err:
+                return _discord_thread_error(err)
+            if not isinstance(thread, dict) or not thread.get("id"):
+                return _discord_thread_error("Discord thread creation returned unexpected response.")
+            thread_id = str(thread["id"])
+            starter_message_id = None
+            starter_message = args.get("starter_message") or args.get("message") or ""
+            if starter_message.strip():
+                send_result = _run_async(_send_discord(token, parent_id, starter_message, thread_id=thread_id))
+                if isinstance(send_result, dict) and send_result.get("error"):
+                    return json.dumps({
+                        "success": False,
+                        "platform": "discord",
+                        "parent_channel_id": parent_id,
+                        "thread_id": thread_id,
+                        "error": send_result.get("error"),
+                        "note": "Thread was created but starter message failed.",
+                    })
+                if isinstance(send_result, dict):
+                    starter_message_id = send_result.get("message_id")
+            return json.dumps({"success": True, "platform": "discord", "parent_channel_id": parent_id, "thread_id": thread_id, "starter_message_id": starter_message_id, "existed": False})
+
+        if action == "read_channel_messages":
+            parent_raw = args.get("parent_channel") or args.get("target") or args.get("channel_id")
+            parent_id, parent_error = _resolve_approved_discord_parent_channel(parent_raw)
+            if parent_error:
+                return _discord_thread_error(parent_error)
+            assert parent_id is not None
+            messages, err = _run_async(_discord_read_messages(token, parent_id, args))
+            if err:
+                return _discord_thread_error(err)
+            return json.dumps({
+                "success": True,
+                "platform": "discord",
+                "action": action,
+                "channel_id": parent_id,
+                "parent_channel_id": parent_id,
+                "messages": messages,
+                "count": len(messages),
+                "order": "chronological",
+            })
+
+        if action == "read_thread_messages":
+            thread_id, thread_error = _validate_discord_snowflake(args.get("thread_id") or args.get("target"), "thread_id")
+            if thread_error:
+                return _discord_thread_error(thread_error.replace("rename_thread_by_id", "read_thread_messages"))
+            assert thread_id is not None
+            thread_info, err = _run_async(_discord_get_thread_info(token, thread_id))
+            if err:
+                return _discord_thread_error(err)
+            parent_id = str(thread_info.get("parent_id") or "")
+            if parent_id not in _DISCORD_APPROVED_HISTORY_PARENT_IDS:
+                return _discord_thread_error("Discord history reads are limited to approved internal lanes only.")
+            messages, err = _run_async(_discord_read_messages(token, thread_id, args))
+            if err:
+                return _discord_thread_error(err)
+            return json.dumps({
+                "success": True,
+                "platform": "discord",
+                "action": action,
+                "thread_id": thread_id,
+                "parent_channel_id": parent_id,
+                "thread_title": str(thread_info.get("name") or ""),
+                "messages": messages,
+                "count": len(messages),
+                "order": "chronological",
+            })
+
+        if action == "rename_thread_by_id":
+            thread_id, thread_error = _validate_discord_snowflake(args.get("thread_id"), "thread_id")
+            if thread_error:
+                return _discord_thread_error(thread_error)
+            parent_id, parent_error = _validate_thread_rename_parent_id(args.get("parent_channel_id"))
+            if parent_error:
+                return _discord_thread_error(parent_error)
+            new_title, title_error = _validate_thread_rename_title(args.get("new_title"))
+            if title_error:
+                return _discord_thread_error(title_error)
+            assert thread_id is not None
+            assert parent_id is not None
+            assert new_title is not None
+            assert token is not None
+            thread_info, err = _run_async(_discord_get_thread_info(token, thread_id))
+            if err:
+                return _discord_thread_error(err)
+            _actual_parent_id, validation_error = _validate_thread_can_be_renamed(thread_info, parent_id)
+            if validation_error:
+                return _discord_thread_error(validation_error)
+            updated, err = _run_async(_discord_api_request(token, "PATCH", f"/channels/{thread_id}", json_body={"name": new_title}))
+            if err:
+                return _discord_thread_error(err)
+            if not isinstance(updated, dict):
+                return _discord_thread_error("Discord thread rename returned unexpected response.")
+            updated_parent_id = str(updated.get("parent_id") or parent_id)
+            if updated_parent_id != parent_id:
+                return _discord_thread_error("Discord thread rename returned a thread outside the approved parent channel.")
+            return json.dumps({
+                "success": True,
+                "platform": "discord",
+                "action": action,
+                "thread_id": str(updated.get("id") or thread_id),
+                "parent_channel_id": parent_id,
+                "old_title": str(thread_info.get("name") or ""),
+                "new_title": str(updated.get("name") or new_title),
+            })
+
+        if action == "send_to_thread":
+            thread_id = (args.get("thread_id") or "").strip()
+            if not thread_id:
+                # Allow title/query resolution when a parent channel is supplied.
+                parent_raw = args.get("parent_channel") or args.get("target")
+                parent_id, parent_error = _resolve_approved_discord_parent_channel(parent_raw)
+                if parent_error:
+                    return _discord_thread_error("thread_id is required unless parent_channel plus query/title resolves exactly.")
+                query = args.get("query") or args.get("title")
+                threads, err = _run_async(_discord_list_threads(token, parent_id, query))
+                if err:
+                    return _discord_thread_error(err)
+                if len(threads) != 1:
+                    return _discord_thread_error(f"Could not resolve exactly one thread; matches={len(threads)}.")
+                thread_id = threads[0]["thread_id"]
+            thread_info, err = _run_async(_discord_get_thread_info(token, thread_id))
+            if err:
+                return _discord_thread_error(err)
+            parent_id = str(thread_info.get("parent_id") or "")
+            message = args.get("message") or args.get("starter_message") or ""
+            if not message.strip():
+                return _discord_thread_error("message is required for send_to_thread.")
+            result = _run_async(_send_discord(token, parent_id, message, thread_id=thread_id))
+            if isinstance(result, dict) and result.get("error"):
+                return json.dumps(result)
+            if isinstance(result, dict):
+                result["thread_id"] = thread_id
+                result["parent_channel_id"] = parent_id
+            return json.dumps(result)
+    except Exception as exc:
+        return _discord_thread_error(f"Discord thread action failed: {exc}")
+
+    return _discord_thread_error(f"Unsupported Discord thread action: {action}")
 
 
 def _handle_send(args):
@@ -318,17 +1203,67 @@ def _handle_send(args):
             try:
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
+                from gateway.routing_context import (
+                    format_target as _format_route_target,
+                    record_outbound_route,
+                )
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
+                source_chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+                source_chat_name = get_session_env("HERMES_SESSION_CHAT_NAME", "")
+                source_thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "")
                 user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+                user_name = get_session_env("HERMES_SESSION_USER_NAME", "")
+                source_target = _format_route_target(
+                    source_label,
+                    source_chat_id,
+                    source_thread_id,
+                )
+                delivered_chat_id = (
+                    str(result.get("thread_id") or "")
+                    if platform_name == "discord" and (thread_id or result.get("thread_id"))
+                    else str(chat_id)
+                )
+                delivered_thread_id = str(result.get("thread_id") or thread_id or "")
+                delivered_target = _format_route_target(
+                    platform_name,
+                    delivered_chat_id,
+                    delivered_thread_id,
+                )
+                mirror_body = _with_route_back_context(
+                    mirror_text,
+                    return_target=source_target,
+                    return_label=source_chat_name,
+                    return_user=user_name,
+                    delivered_target=delivered_target,
+                )
+                mirror_chat_id = delivered_chat_id if platform_name == "discord" else chat_id
+                mirror_thread_id = delivered_thread_id or thread_id
                 if mirror_to_session(
                     platform_name,
-                    chat_id,
-                    mirror_text,
+                    mirror_chat_id,
+                    mirror_body,
                     source_label=source_label,
-                    thread_id=thread_id,
+                    thread_id=mirror_thread_id,
                     user_id=user_id,
                 ):
                     result["mirrored"] = True
+                if (
+                    result.get("message_id")
+                    and source_target
+                    and delivered_target
+                    and source_target != delivered_target
+                ):
+                    if record_outbound_route(
+                        platform=platform_name,
+                        chat_id=delivered_chat_id,
+                        thread_id=delivered_thread_id,
+                        message_id=str(result.get("message_id")),
+                        return_target=source_target,
+                        return_label=source_chat_name,
+                        return_user=user_name,
+                        original_message=mirror_text,
+                    ):
+                        result["route_back_recorded"] = True
             except Exception:
                 pass
 
@@ -337,6 +1272,40 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _with_route_back_context(
+    message_text: str,
+    *,
+    return_target: str | None,
+    return_label: str = "",
+    return_user: str = "",
+    delivered_target: str | None = None,
+) -> str:
+    """Add route-back instructions to the target session mirror only."""
+    text = str(message_text or "")
+    return_target = (return_target or "").strip()
+    delivered_target = (delivered_target or "").strip()
+    if not return_target or not delivered_target or return_target == delivered_target:
+        return text
+
+    label_bits = []
+    if return_user:
+        label_bits.append(str(return_user).strip())
+    if return_label and str(return_label).strip() not in label_bits:
+        label_bits.append(str(return_label).strip())
+    source_label = " / ".join(bit for bit in label_bits if bit) or return_target
+
+    return (
+        "[Delivery mirror for routed message]\n"
+        f"Original source: {source_label}\n"
+        f"Return target: `{return_target}`\n"
+        "When this routed request gets an answer, fix, decision, or status update "
+        "here, send a concise update back to the return target with send_message. "
+        "Do not assume the original requester can see this destination chat.\n\n"
+        "Delivered message:\n"
+        f"{text}"
+    )
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -1143,7 +2112,10 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             {"id": str(idx), "filename": os.path.basename(path)}
                             for idx, path in enumerate(valid_media)
                         ]
-                        starter_message = {"content": message, "attachments": attachments_meta}
+                        starter_message = _discord_message_payload(
+                            message,
+                            attachments=attachments_meta,
+                        )
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -1175,7 +2147,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
                             headers=json_headers,
                             json={
                                 "name": thread_name,
-                                "message": {"content": message},
+                                "message": _discord_message_payload(message),
                             },
                             **_req_kw,
                         ) as resp:
@@ -1202,7 +2174,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                async with session.post(url, headers=json_headers, json=_discord_message_payload(message), **_req_kw) as resp:
                     if resp.status not in {200, 201}:
                         body = await resp.text()
                         return _error(f"Discord API error ({resp.status}): {body}")

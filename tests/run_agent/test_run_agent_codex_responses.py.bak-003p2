@@ -1,0 +1,280 @@
+import sys
+import types
+from types import SimpleNamespace
+
+import pytest
+
+sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
+sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
+sys.modules.setdefault("fal_client", types.SimpleNamespace())
+
+import run_agent
+
+
+@pytest.fixture(autouse=True)
+def _no_codex_backoff(monkeypatch):
+    import time as _time
+    monkeypatch.setattr(run_agent, "jittered_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+
+
+def _patch_agent_bootstrap(monkeypatch):
+    monkeypatch.setattr(
+        run_agent,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run shell commands.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+    )
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+
+
+def _build_agent(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
+def _codex_message_response(text: str):
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=5, output_tokens=3, total_tokens=8),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
+def _codex_tool_call_response():
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4, total_tokens=16),
+        status="completed",
+        model="gpt-5-codex",
+    )
+
+
+class _FakeResponsesStream:
+    def __init__(self, *, final_response=None, final_error=None):
+        self._final_response = final_response
+        self._final_error = final_error
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+    def get_final_response(self):
+        if self._final_error is not None:
+            raise self._final_error
+        return self._final_response
+
+
+class _FakeCreateStream:
+    def __init__(self, events):
+        self._events = list(events)
+        self.closed = False
+
+    def __iter__(self):
+        return iter(self._events)
+
+    def close(self):
+        self.closed = True
+
+
+class _ExplodingIterStream:
+    def __init__(self, events, error):
+        self._events = list(events)
+        self._error = error
+        self._index = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self._index < len(self._events):
+            ev = self._events[self._index]
+            self._index += 1
+            return ev
+        raise self._error
+
+
+
+class _TextDeltaEvent:
+    def __init__(self, delta):
+        self.type = "response.output_text.delta"
+        self.delta = delta
+
+
+class _DoneEvent:
+    def __init__(self, response=None, item=None, type_name="response.output_item.done"):
+        self.type = type_name
+        self.response = response
+        self.item = item
+
+
+class _ToolCallEvent:
+    def __init__(self):
+        self.type = "response.output_item.done"
+        self.item = SimpleNamespace(type="function_call", call_id="call_1", name="terminal")
+
+
+def _codex_request_kwargs():
+    return {
+        "model": "gpt-5-codex",
+        "instructions": "You are Hermes.",
+        "input": [{"role": "user", "content": "Ping"}],
+        "tools": None,
+        "store": False,
+    }
+
+
+def test_run_codex_stream_event_handling_error_is_logged(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    diag_path = tmp_path / "codex_shape_diag.jsonl"
+    monkeypatch.setenv("HERMES_CODEX_LIVE_SHAPE_DIAG", "1")
+    monkeypatch.setenv("HERMES_CODEX_LIVE_SHAPE_DIAG_PATH", str(diag_path))
+
+    class _BadEvent:
+        type = "response.output_text.delta"
+        delta = None
+
+    class _BrokenStream:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def __iter__(self):
+            return iter([_BadEvent()])
+        def get_final_response(self):
+            return _codex_message_response("create fallback ok")
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=lambda **kwargs: _BrokenStream(),
+            create=lambda **kwargs: _codex_message_response("create fallback ok"),
+        )
+    )
+
+    def _boom(_delta):
+        raise TypeError("'NoneType' object is not iterable")
+
+    agent._fire_stream_delta = _boom  # type: ignore[assignment]
+
+    with pytest.raises(TypeError, match="NoneType"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    diag_text = diag_path.read_text(encoding="utf-8")
+    assert "run_codex_stream.event_loop_enter" in diag_text
+    assert "run_codex_stream.event_handling_error" in diag_text
+    assert "Ping" not in diag_text
+    assert "create fallback ok" not in diag_text
+
+
+def test_run_codex_stream_event_loop_exit_and_final_response_logged(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    diag_path = tmp_path / "codex_shape_diag.jsonl"
+    monkeypatch.setenv("HERMES_CODEX_LIVE_SHAPE_DIAG", "1")
+    monkeypatch.setenv("HERMES_CODEX_LIVE_SHAPE_DIAG_PATH", str(diag_path))
+
+    response = _codex_message_response("hello from codex")
+    events = [
+        _TextDeltaEvent("hello "),
+        _TextDeltaEvent("from codex"),
+        _DoneEvent(response=response, type_name="response.output_item.done"),
+    ]
+
+    def _fake_stream(**kwargs):
+        return _FakeResponsesStream(final_response=response)
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: response,
+        )
+    )
+
+    class _IterableStream:
+        def __enter__(self):
+            return self
+        def __exit__(self, exc_type, exc, tb):
+            return False
+        def __iter__(self):
+            return iter(events)
+        def get_final_response(self):
+            return response
+
+    agent.client.responses.stream = lambda **kwargs: _IterableStream()
+
+    result = agent._run_codex_stream(_codex_request_kwargs())
+    assert result.output[0].content[0].text == "hello from codex"
+    diag_text = diag_path.read_text(encoding="utf-8")
+    assert "run_codex_stream.event_loop_exit" in diag_text
+    assert "run_codex_stream.before_get_final_response" in diag_text
+    assert "run_codex_stream.final_response" in diag_text
+
+
+def test_run_codex_stream_stream_iteration_exception_is_logged(monkeypatch, tmp_path):
+    agent = _build_agent(monkeypatch)
+    diag_path = tmp_path / "codex_shape_diag.jsonl"
+    monkeypatch.setenv("HERMES_CODEX_LIVE_SHAPE_DIAG", "1")
+    monkeypatch.setenv("HERMES_CODEX_LIVE_SHAPE_DIAG_PATH", str(diag_path))
+
+    def _fake_stream(**kwargs):
+        return _ExplodingIterStream([
+            _TextDeltaEvent("hello")
+        ], TypeError("'NoneType' object is not iterable"))
+
+    agent.client = SimpleNamespace(
+        responses=SimpleNamespace(
+            stream=_fake_stream,
+            create=lambda **kwargs: _codex_message_response("unused"),
+        )
+    )
+
+    with pytest.raises(TypeError, match="NoneType"):
+        agent._run_codex_stream(_codex_request_kwargs())
+
+    diag_text = diag_path.read_text(encoding="utf-8")
+    assert "run_codex_stream.stream_block_error" in diag_text or "run_codex_stream.event_handling_error" in diag_text

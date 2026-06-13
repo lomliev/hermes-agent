@@ -25,294 +25,6 @@ from typing import Any, Dict, List
 logger = logging.getLogger(__name__)
 
 
-def _get_attr(value: Any, name: str, default: Any = None) -> Any:
-    if isinstance(value, dict):
-        return value.get(name, default)
-    return getattr(value, name, default)
-
-
-def _is_sdk_text_only_parser_typeerror(exc: Exception) -> bool:
-    if not isinstance(exc, TypeError):
-        return False
-    text = str(exc).lower()
-    return "nonetype" in text and "iterable" in text
-
-
-def _is_non_text_output_item(item: Any) -> bool:
-    item_type = _get_attr(item, "type")
-    return bool(item_type and item_type != "message")
-
-
-def _extract_output_item_text(item: Any) -> str:
-    if _get_attr(item, "type") != "message":
-        return ""
-    content = _get_attr(item, "content")
-    if not isinstance(content, list):
-        return ""
-    chunks: list[str] = []
-    for part in content:
-        part_type = _get_attr(part, "type")
-        if part_type not in {"output_text", "text"}:
-            continue
-        text = _get_attr(part, "text")
-        if isinstance(text, str) and text:
-            chunks.append(text)
-    return "".join(chunks)
-
-
-def _text_only_recovery_text(
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-) -> str:
-    streamed_text = "".join(part for part in streamed_text_parts if isinstance(part, str))
-    if streamed_text.strip():
-        return streamed_text
-    item_text = "\n".join(
-        text for text in (_extract_output_item_text(item) for item in collected_output_items)
-        if text
-    )
-    return item_text
-
-
-def _can_recover_text_only_stream_parser_error(
-    exc: Exception,
-    *,
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-    has_tool_calls: bool,
-    saw_non_text_output_item: bool,
-) -> bool:
-    if not _is_sdk_text_only_parser_typeerror(exc):
-        return False
-    if has_tool_calls or saw_non_text_output_item:
-        return False
-    if any(_is_non_text_output_item(item) for item in collected_output_items):
-        return False
-    return bool(_text_only_recovery_text(streamed_text_parts, collected_output_items).strip())
-
-
-def _stream_parser_shape(
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-    *,
-    has_tool_calls: bool,
-    saw_non_text_output_item: bool,
-) -> str:
-    item_types = []
-    for item in collected_output_items[:8]:
-        item_types.append(str(_get_attr(item, "type", type(item).__name__)))
-    return (
-        f"streamed_chars={sum(len(p) for p in streamed_text_parts if isinstance(p, str))} "
-        f"streamed_parts={len(streamed_text_parts)} "
-        f"collected_items={len(collected_output_items)} "
-        f"item_types={item_types} "
-        f"has_tool_calls={has_tool_calls} "
-        f"saw_non_text_output_item={saw_non_text_output_item}"
-    )
-
-
-def _handle_stream_parser_typeerror(
-    agent,
-    *,
-    api_kwargs: dict,
-    active_client: Any,
-    exc: Exception,
-    source: str,
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-    has_tool_calls: bool,
-    saw_non_text_output_item: bool,
-):
-    if _can_recover_text_only_stream_parser_error(
-        exc,
-        streamed_text_parts=streamed_text_parts,
-        collected_output_items=collected_output_items,
-        has_tool_calls=has_tool_calls,
-        saw_non_text_output_item=saw_non_text_output_item,
-    ):
-        logger.warning(
-            "Codex Responses stream %s parser raised %s after text-only "
-            "deltas; synthesized final response. %s %s",
-            source,
-            type(exc).__name__,
-            _stream_parser_shape(
-                streamed_text_parts,
-                collected_output_items,
-                has_tool_calls=has_tool_calls,
-                saw_non_text_output_item=saw_non_text_output_item,
-            ),
-            agent._client_log_context(),
-        )
-        return _synthesize_text_only_response(
-            api_kwargs,
-            streamed_text_parts,
-            collected_output_items,
-        )
-
-    if _is_sdk_text_only_parser_typeerror(exc):
-        logger.warning(
-            "Codex Responses stream %s parser raised %s without text-only "
-            "recovery material; falling back to create(stream=True). %s %s",
-            source,
-            type(exc).__name__,
-            _stream_parser_shape(
-                streamed_text_parts,
-                collected_output_items,
-                has_tool_calls=has_tool_calls,
-                saw_non_text_output_item=saw_non_text_output_item,
-            ),
-            agent._client_log_context(),
-        )
-        return run_codex_create_stream_fallback(
-            agent,
-            api_kwargs,
-            client=active_client,
-            prior_streamed_text_parts=streamed_text_parts,
-            prior_output_items=collected_output_items,
-        )
-
-    raise exc
-
-
-def _synthesize_text_only_response(
-    api_kwargs: dict,
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-):
-    text = _text_only_recovery_text(streamed_text_parts, collected_output_items)
-    return SimpleNamespace(
-        output=[
-            SimpleNamespace(
-                type="message",
-                role="assistant",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=text)],
-            )
-        ],
-        status="completed",
-        output_text=text,
-        model=api_kwargs.get("model"),
-    )
-
-
-def _synthesize_response_from_stream_material(
-    api_kwargs: dict,
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-):
-    text = _text_only_recovery_text(streamed_text_parts, collected_output_items)
-    output = list(collected_output_items)
-    if not output and text.strip():
-        output = [
-            SimpleNamespace(
-                type="message",
-                role="assistant",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=text)],
-            )
-        ]
-    if not output:
-        return None
-    return SimpleNamespace(
-        output=output,
-        status="completed",
-        output_text=text,
-        model=api_kwargs.get("model"),
-    )
-
-
-def _backfill_response_output(
-    response: Any,
-    *,
-    streamed_text_parts: List[str],
-    collected_output_items: List[Any],
-    log_prefix: str,
-) -> bool:
-    output = getattr(response, "output", None)
-    if output is not None and not (isinstance(output, list) and not output):
-        return False
-
-    if collected_output_items:
-        response.output = list(collected_output_items)
-        logger.debug("%s: backfilled %d output items", log_prefix, len(collected_output_items))
-        return True
-
-    if streamed_text_parts:
-        assembled = "".join(streamed_text_parts)
-        response.output = [
-            SimpleNamespace(
-                type="message",
-                role="assistant",
-                status="completed",
-                content=[SimpleNamespace(type="output_text", text=assembled)],
-            )
-        ]
-        logger.debug(
-            "%s: synthesized output from %d text deltas (%d chars)",
-            log_prefix,
-            len(streamed_text_parts),
-            len(assembled),
-        )
-        return True
-
-    if output is None:
-        response.output = []
-        logger.debug("%s: normalized missing output to empty list", log_prefix)
-        return True
-
-    return False
-
-
-def _recover_response_from_fallback_create_typeerror(
-    agent,
-    *,
-    fallback_kwargs: dict,
-    exc: Exception,
-    prior_streamed_text_parts: List[str],
-    prior_output_items: List[Any],
-):
-    recovered_response = None
-    if _is_sdk_text_only_parser_typeerror(exc):
-        recovered_response = _synthesize_response_from_stream_material(
-            fallback_kwargs,
-            prior_streamed_text_parts,
-            prior_output_items,
-        )
-    if recovered_response is not None:
-        logger.warning(
-            "Codex Responses create(stream=True) fallback create raised %s; "
-            "returning prior stream material. %s %s",
-            type(exc).__name__,
-            _stream_parser_shape(
-                prior_streamed_text_parts,
-                prior_output_items,
-                has_tool_calls=any(
-                    _get_attr(item, "type") in {"function_call", "custom_tool_call"}
-                    for item in prior_output_items
-                ),
-                saw_non_text_output_item=any(
-                    _is_non_text_output_item(item) for item in prior_output_items
-                ),
-            ),
-            agent._client_log_context(),
-        )
-        return recovered_response
-    if _is_sdk_text_only_parser_typeerror(exc):
-        logger.warning(
-            "Codex Responses create(stream=True) fallback create raised %s "
-            "without recoverable prior stream material. %s %s",
-            type(exc).__name__,
-            _stream_parser_shape(
-                prior_streamed_text_parts,
-                prior_output_items,
-                has_tool_calls=False,
-                saw_non_text_output_item=False,
-            ),
-            agent._client_log_context(),
-        )
-    raise exc
-
-
 def run_codex_app_server_turn(
     agent,
     *,
@@ -470,7 +182,6 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
     active_client = client or agent._ensure_primary_openai_client(reason="codex_stream_direct")
     max_stream_retries = 1
     has_tool_calls = False
-    saw_non_text_output_item = False
     first_delta_fired = False
     # Accumulate streamed text so we can recover if get_final_response()
     # returns empty output (e.g. chatgpt.com backend-api sends
@@ -480,20 +191,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         if agent._interrupt_requested:
             raise InterruptedError("Agent interrupted before Codex stream retry")
         collected_output_items: list = []
-        parser_typeerror = None
-        parser_typeerror_source = None
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
-                stream_iter = iter(stream)
-                while True:
-                    try:
-                        event = next(stream_iter)
-                    except StopIteration:
-                        break
-                    except TypeError as exc:
-                        parser_typeerror = exc
-                        parser_typeerror_source = "SDK iterator"
-                        break
+                for event in stream:
                     agent._touch_activity("receiving stream response")
                     if agent._interrupt_requested:
                         break
@@ -524,11 +224,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     # (chatgpt.com/backend-api/codex) stream valid items
                     # via response.output_item.done but the SDK's
                     # get_final_response() returns an empty output list.
-                    elif event_type in {"response.output_item.added", "response.output_item.done"}:
+                    elif event_type == "response.output_item.done":
                         done_item = getattr(event, "item", None)
-                        if done_item is not None and _is_non_text_output_item(done_item):
-                            saw_non_text_output_item = True
-                        if event_type == "response.output_item.done" and done_item is not None:
+                        if done_item is not None:
                             collected_output_items.append(done_item)
                     # Log non-completed terminal events for diagnostics
                     elif event_type in {"response.incomplete", "response.failed"}:
@@ -542,33 +240,31 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                             sum(len(p) for p in agent._codex_streamed_text_parts),
                             agent._client_log_context(),
                         )
-                if parser_typeerror is None:
-                    try:
-                        final_response = stream.get_final_response()
-                    except TypeError as exc:
-                        parser_typeerror = exc
-                        parser_typeerror_source = "final-response"
-            if parser_typeerror is not None:
-                return _handle_stream_parser_typeerror(
-                    agent,
-                    api_kwargs=api_kwargs,
-                    active_client=active_client,
-                    exc=parser_typeerror,
-                    source=parser_typeerror_source or "unknown",
-                    streamed_text_parts=agent._codex_streamed_text_parts,
-                    collected_output_items=collected_output_items,
-                    has_tool_calls=has_tool_calls,
-                    saw_non_text_output_item=saw_non_text_output_item,
-                )
-            _out = getattr(final_response, "output", None)
-            if _out is None or (isinstance(_out, list) and not _out):
-                _backfill_response_output(
-                    final_response,
-                    streamed_text_parts=agent._codex_streamed_text_parts if not has_tool_calls else [],
-                    collected_output_items=collected_output_items,
-                    log_prefix="Codex stream",
-                )
-            return final_response
+                final_response = stream.get_final_response()
+                # PATCH: ChatGPT Codex backend streams valid output items
+                # but get_final_response() can return an empty output list.
+                # Backfill from collected items or synthesize from deltas.
+                _out = getattr(final_response, "output", None)
+                if isinstance(_out, list) and not _out:
+                    if collected_output_items:
+                        final_response.output = list(collected_output_items)
+                        logger.debug(
+                            "Codex stream: backfilled %d output items from stream events",
+                            len(collected_output_items),
+                        )
+                    elif agent._codex_streamed_text_parts and not has_tool_calls:
+                        assembled = "".join(agent._codex_streamed_text_parts)
+                        final_response.output = [SimpleNamespace(
+                            type="message",
+                            role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )]
+                        logger.debug(
+                            "Codex stream: synthesized output from %d text deltas (%d chars)",
+                            len(agent._codex_streamed_text_parts), len(assembled),
+                        )
+                return final_response
         except (_httpx.RemoteProtocolError, _httpx.ReadTimeout, _httpx.ConnectError, ConnectionError) as exc:
             if attempt < max_stream_retries:
                 logger.debug(
@@ -584,13 +280,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                 agent._client_log_context(),
                 exc,
             )
-            return run_codex_create_stream_fallback(
-                agent,
-                api_kwargs,
-                client=active_client,
-                prior_streamed_text_parts=agent._codex_streamed_text_parts,
-                prior_output_items=collected_output_items,
-            )
+            return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
         except RuntimeError as exc:
             err_text = str(exc)
             missing_completed = "response.completed" in err_text
@@ -637,51 +327,21 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
                     agent._client_log_context(),
                     err_text,
                 )
-                return run_codex_create_stream_fallback(
-                    agent,
-                    api_kwargs,
-                    client=active_client,
-                    prior_streamed_text_parts=agent._codex_streamed_text_parts,
-                    prior_output_items=collected_output_items,
-                )
+                return agent._run_codex_create_stream_fallback(api_kwargs, client=active_client)
             raise
 
 
 
-def run_codex_create_stream_fallback(
-    agent,
-    api_kwargs: dict,
-    client: Any = None,
-    *,
-    prior_streamed_text_parts: List[str] | None = None,
-    prior_output_items: List[Any] | None = None,
-):
+def run_codex_create_stream_fallback(agent, api_kwargs: dict, client: Any = None):
     """Fallback path for stream completion edge cases on Codex-style Responses backends."""
     active_client = client or agent._ensure_primary_openai_client(reason="codex_create_stream_fallback")
     fallback_kwargs = dict(api_kwargs)
     fallback_kwargs["stream"] = True
     fallback_kwargs = agent._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
-    prior_output_items = list(prior_output_items or [])
-    prior_streamed_text_parts = list(prior_streamed_text_parts or [])
-    try:
-        stream_or_response = active_client.responses.create(**fallback_kwargs)
-    except TypeError as exc:
-        return _recover_response_from_fallback_create_typeerror(
-            agent,
-            fallback_kwargs=fallback_kwargs,
-            exc=exc,
-            prior_streamed_text_parts=prior_streamed_text_parts,
-            prior_output_items=prior_output_items,
-        )
+    stream_or_response = active_client.responses.create(**fallback_kwargs)
 
     # Compatibility shim for mocks or providers that still return a concrete response.
     if hasattr(stream_or_response, "output"):
-        _backfill_response_output(
-            stream_or_response,
-            streamed_text_parts=prior_streamed_text_parts,
-            collected_output_items=prior_output_items,
-            log_prefix="Codex fallback create response",
-        )
         return stream_or_response
     if not hasattr(stream_or_response, "__iter__"):
         return stream_or_response
@@ -689,21 +349,8 @@ def run_codex_create_stream_fallback(
     terminal_response = None
     collected_output_items: list = []
     collected_text_deltas: list = []
-    parser_typeerror = None
     try:
-        try:
-            stream_iter = iter(stream_or_response)
-        except TypeError as exc:
-            parser_typeerror = exc
-            stream_iter = None
-        while stream_iter is not None:
-            try:
-                event = next(stream_iter)
-            except StopIteration:
-                break
-            except TypeError as exc:
-                parser_typeerror = exc
-                break
+        for event in stream_or_response:
             agent._touch_activity("receiving stream response")
             event_type = getattr(event, "type", None)
             if not event_type and isinstance(event, dict):
@@ -759,16 +406,26 @@ def run_codex_create_stream_fallback(
             if terminal_response is None and isinstance(event, dict):
                 terminal_response = event.get("response")
             if terminal_response is not None:
-                output_items = collected_output_items or prior_output_items
-                text_deltas = collected_text_deltas or prior_streamed_text_parts
+                # Backfill empty output from collected stream events
                 _out = getattr(terminal_response, "output", None)
-                if _out is None or (isinstance(_out, list) and not _out):
-                    _backfill_response_output(
-                        terminal_response,
-                        streamed_text_parts=text_deltas,
-                        collected_output_items=output_items,
-                        log_prefix="Codex fallback stream",
-                    )
+                if isinstance(_out, list) and not _out:
+                    if collected_output_items:
+                        terminal_response.output = list(collected_output_items)
+                        logger.debug(
+                            "Codex fallback stream: backfilled %d output items",
+                            len(collected_output_items),
+                        )
+                    elif collected_text_deltas:
+                        assembled = "".join(collected_text_deltas)
+                        terminal_response.output = [SimpleNamespace(
+                            type="message", role="assistant",
+                            status="completed",
+                            content=[SimpleNamespace(type="output_text", text=assembled)],
+                        )]
+                        logger.debug(
+                            "Codex fallback stream: synthesized from %d deltas (%d chars)",
+                            len(collected_text_deltas), len(assembled),
+                        )
                 return terminal_response
     finally:
         close_fn = getattr(stream_or_response, "close", None)
@@ -777,50 +434,6 @@ def run_codex_create_stream_fallback(
                 close_fn()
             except Exception:
                 pass
-
-    if parser_typeerror is not None:
-        output_items = collected_output_items or prior_output_items
-        text_deltas = collected_text_deltas or prior_streamed_text_parts
-        recovered_response = None
-        if _is_sdk_text_only_parser_typeerror(parser_typeerror):
-            recovered_response = _synthesize_response_from_stream_material(
-                fallback_kwargs,
-                text_deltas,
-                output_items,
-            )
-        if recovered_response is not None:
-            logger.warning(
-                "Codex Responses create(stream=True) fallback parser raised %s; "
-                "returning collected stream material. %s %s",
-                type(parser_typeerror).__name__,
-                _stream_parser_shape(
-                    text_deltas,
-                    output_items,
-                    has_tool_calls=any(
-                        _get_attr(item, "type") in {"function_call", "custom_tool_call"}
-                        for item in output_items
-                    ),
-                    saw_non_text_output_item=any(
-                        _is_non_text_output_item(item) for item in output_items
-                    ),
-                ),
-                agent._client_log_context(),
-            )
-            return recovered_response
-        if _is_sdk_text_only_parser_typeerror(parser_typeerror):
-            logger.warning(
-                "Codex Responses create(stream=True) fallback parser raised %s "
-                "without recoverable stream material. %s %s",
-                type(parser_typeerror).__name__,
-                _stream_parser_shape(
-                    text_deltas,
-                    output_items,
-                    has_tool_calls=False,
-                    saw_non_text_output_item=False,
-                ),
-                agent._client_log_context(),
-            )
-        raise parser_typeerror
 
     if terminal_response is not None:
         return terminal_response

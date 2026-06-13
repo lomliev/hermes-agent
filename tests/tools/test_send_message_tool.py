@@ -22,7 +22,19 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
+    SEND_MESSAGE_SCHEMA,
+    _DISCORD_APPROVED_CHANNEL_CREATE_NAMES,
+    _DISCORD_APPROVED_CHANNEL_RENAME_NAMES,
+    _DISCORD_APPROVED_THREAD_IDS,
+    _DISCORD_APPROVED_HISTORY_PARENT_IDS,
+    _DISCORD_APPROVED_THREAD_RENAME_PARENT_IDS,
+    _DISCORD_APPROVED_THREAD_LANES,
+    _DISCORD_SKYVISION_NEXT_CANONICAL_LANES,
+    _build_discord_messages_path,
+    _resolve_approved_discord_parent_channel,
+    _validate_thread_rename_parent_id,
     _derive_forum_thread_name,
+    _discord_message_payload,
     _is_telegram_thread_not_found,
     _parse_target_ref,
     _send_discord,
@@ -30,6 +42,7 @@ from tools.send_message_tool import (
     _send_signal,
     _send_telegram,
     _send_to_platform,
+    _with_route_back_context,
     send_message_tool,
 )
 
@@ -82,6 +95,625 @@ def _ensure_slack_mock(monkeypatch):
 
 
 class TestSendMessageTool:
+    def test_discord_thread_actions_are_in_send_message_schema(self):
+        action_enum = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        assert "list_threads" in action_enum
+        assert "resolve_thread" in action_enum
+        assert "create_thread" in action_enum
+        assert "send_to_thread" in action_enum
+        assert "read_channel_messages" in action_enum
+        assert "read_thread_messages" in action_enum
+
+    def test_discord_history_actions_are_bounded_in_schema_and_allowlist(self):
+        action_enum = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        assert "read_channel_messages" in action_enum
+        assert "read_thread_messages" in action_enum
+        assert not {"read_guild_messages", "search_all_messages", "read_dm_messages"} & set(action_enum)
+        assert _DISCORD_APPROVED_HISTORY_PARENT_IDS == _DISCORD_APPROVED_THREAD_IDS
+
+    def test_discord_history_message_path_validates_limit_and_cursor(self):
+        path, error = _build_discord_messages_path("1504852408227069993", {"limit": 25, "before_message_id": "111222333444555666"})
+        assert error is None
+        assert path == "/channels/1504852408227069993/messages?limit=25&before=111222333444555666"
+
+        path, error = _build_discord_messages_path("1504852408227069993", {"limit": 101})
+        assert path is None
+        assert "between 1 and 100" in error
+
+        path, error = _build_discord_messages_path("1504852408227069993", {"before_message_id": "1", "after_message_id": "2"})
+        assert path is None
+        assert "at most one" in error
+
+    def test_read_channel_messages_rejects_unapproved_lane_before_api(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="dummy-discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value=None), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            result = json.loads(send_message_tool({"action": "read_channel_messages", "target": "discord:#general"}))
+
+        assert "error" in result
+        assert "approved internal lanes" in result["error"]
+        api_mock.assert_not_called()
+
+    def test_read_channel_messages_returns_chronological_sanitized_messages(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="dummy-discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        async def fake_api(token, method, path, *, json_body=None):
+            assert token == "dummy-discord-token"
+            assert method == "GET"
+            assert path == "/channels/1504852408227069993/messages?limit=2"
+            return [
+                {"id": "2", "timestamp": "2026-01-01T00:00:02Z", "content": "new", "author": {"id": "20", "username": "bot", "bot": True}},
+                {"id": "1", "timestamp": "2026-01-01T00:00:01Z", "content": "old", "author": {"id": "10", "username": "emil"}},
+            ], None
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", new=fake_api):
+            result = json.loads(send_message_tool({"action": "read_channel_messages", "target": "backend", "limit": 2}))
+
+        assert result["success"] is True
+        assert result["channel_id"] == "1504852408227069993"
+        assert [m["id"] for m in result["messages"]] == ["1", "2"]
+        assert result["messages"][1]["author"]["bot"] is True
+
+    def test_read_thread_messages_validates_parent_before_history_read(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="dummy-discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        async def fake_api(token, method, path, *, json_body=None):
+            if path == "/channels/1515227976948514847":
+                return {"id": "1515227976948514847", "name": "smoke", "type": 11, "parent_id": "1510888721614901358"}, None
+            if path == "/channels/1515227976948514847/messages?limit=1":
+                return [{"id": "3", "content": "thread msg", "author": {"id": "30", "username": "assistant", "bot": True}}], None
+            raise AssertionError(f"unexpected API call {method} {path}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", new=fake_api):
+            result = json.loads(send_message_tool({"action": "read_thread_messages", "thread_id": "1515227976948514847", "limit": 1}))
+
+        assert result["success"] is True
+        assert result["thread_id"] == "1515227976948514847"
+        assert result["parent_channel_id"] == "1510888721614901358"
+        assert result["messages"][0]["content"] == "thread msg"
+
+    def test_discord_thread_parent_resolution_is_limited_to_approved_lanes(self):
+        expected = {
+            "control-tower": "1504852355588423801",
+            "backend": "1504852408227069993",
+            "frontend": "1504852444407140402",
+            "devops": "1504852485083496561",
+            "booking-ops": "1504852553031221391",
+            "business-accounting-legal": "1504852628373373028",
+            "nasi-ai-ops": "1505499746939174993",
+            "chatbot": "1507239516409167942",
+            "marketing-growth": "1507239177350283274",
+            "suppliers": "1507239385010016308",
+            "chatbot-web-monitoring": "1510888721614901358",
+        }
+        assert _DISCORD_SKYVISION_NEXT_CANONICAL_LANES == expected
+        assert _DISCORD_APPROVED_THREAD_IDS == set(expected.values())
+
+        for raw, expected_id in expected.items():
+            for target in (raw, f"#{raw}", f"discord:#{raw}", expected_id):
+                channel_id, error = _resolve_approved_discord_parent_channel(target)
+                assert error is None
+                assert channel_id == expected_id
+
+        aliases = {
+            "sky-next-control-tower": "1504852355588423801",
+            "sky-next-backend-api-monolith": "1504852408227069993",
+            "sky-next-frontend": "1504852444407140402",
+            "sky-next-devops-gitlab-cloudflare": "1504852485083496561",
+            "sky-next-booking-ops": "1504852553031221391",
+            "sky-next-business-accounting-legal": "1504852628373373028",
+            "sky-next-business-accounts": "1504852628373373028",
+            "sky-next-nasi-ai-ops": "1505499746939174993",
+            "chatbot-ops": "1507239516409167942",
+            "skyvision-marketing": "1507239177350283274",
+            "supplier-onboarding": "1507239385010016308",
+            "suppliers-onboarding": "1507239385010016308",
+            "skyvision-chatbot-monitoring": "1510888721614901358",
+        }
+        for raw, expected_id in aliases.items():
+            channel_id, error = _resolve_approved_discord_parent_channel(f"discord:#{raw}")
+            assert error is None
+            assert channel_id == expected_id
+
+        assert "marketing" not in _DISCORD_APPROVED_THREAD_LANES
+        for raw in ("marketing", "#marketing", "discord:#marketing", "1282928816104276019"):
+            channel_id, error = _resolve_approved_discord_parent_channel(raw)
+            assert channel_id is None
+            assert "marketing" in error.lower()
+
+        channel_id, error = _resolve_approved_discord_parent_channel("discord:#sky-next-unknown")
+        assert channel_id is None
+        assert "approved internal lanes" in error
+
+        for raw in ("discord:#general", "discord:*"):
+            channel_id, error = _resolve_approved_discord_parent_channel(raw)
+            assert channel_id is None
+            assert "approved internal lanes" in error
+
+    def test_create_thread_rejects_unapproved_discord_lane_before_send(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="dummy-discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value=None), \
+             patch("tools.send_message_tool._send_discord", new=AsyncMock()) as send_mock, \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "create_thread",
+                        "parent_channel": "discord:#general",
+                        "title": "Incident follow-up",
+                        "starter_message": "Starting the thread.",
+                    }
+                )
+            )
+
+        assert "error" in result
+        assert "approved internal lanes" in result["error"]
+        send_mock.assert_not_called()
+        api_mock.assert_not_called()
+
+    def _make_discord_admin_config(self, category_id="123456789012345678"):
+        discord_cfg = SimpleNamespace(
+            enabled=True,
+            token="dummy-discord-token",
+            extra={"skyvision_next_category_id": category_id},
+        )
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        return config
+
+    def test_discord_bounded_channel_admin_actions_are_limited_in_schema(self):
+        action_enum = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        bounded_admin_actions = {
+            "list_category_channels",
+            "rename_channel_by_id",
+            "create_text_channel_in_category",
+        }
+        assert bounded_admin_actions <= set(action_enum)
+        assert not {
+            "delete_channel",
+            "set_permissions",
+            "edit_message",
+            "delete_message",
+            "move_thread",
+            "delete_thread",
+            "create_webhook",
+        } & set(action_enum)
+        assert _DISCORD_APPROVED_CHANNEL_RENAME_NAMES == {
+            "control-tower",
+            "backend",
+            "frontend",
+            "devops",
+            "booking-ops",
+            "business-accounting-legal",
+            "nasi-ai-ops",
+        }
+        assert _DISCORD_APPROVED_CHANNEL_CREATE_NAMES == {"chatbot", "marketing-growth", "suppliers"}
+
+    def test_discord_channel_admin_fails_closed_without_configured_category(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="dummy-discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+        with patch.dict(os.environ, {"DISCORD_SKYVISION_NEXT_CATEGORY_ID": ""}, clear=False), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            result = json.loads(send_message_tool({"action": "list_category_channels"}))
+
+        assert "error" in result
+        assert "category ID is not configured" in result["error"]
+        assert "dummy-discord-token" not in json.dumps(result)
+        api_mock.assert_not_called()
+
+    def test_discord_channel_admin_rejects_category_outside_allowlist_before_api(self):
+        config = self._make_discord_admin_config(category_id="123456789012345678")
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            result = json.loads(send_message_tool({
+                "action": "list_category_channels",
+                "category_id": "999999999999999999",
+            }))
+
+        assert "error" in result
+        assert "category outside approved SkyVision Next category" in result["error"]
+        api_mock.assert_not_called()
+
+    def test_discord_channel_admin_rename_requires_channel_id_and_new_name(self):
+        config = self._make_discord_admin_config()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            missing_channel = json.loads(send_message_tool({
+                "action": "rename_channel_by_id",
+                "category_id": "123456789012345678",
+                "new_name": "frontend",
+            }))
+            missing_name = json.loads(send_message_tool({
+                "action": "rename_channel_by_id",
+                "category_id": "123456789012345678",
+                "channel_id": "222222222222222222",
+            }))
+
+        assert "channel_id is required" in missing_channel["error"]
+        assert "name/new_name is required" in missing_name["error"]
+        api_mock.assert_not_called()
+
+    def test_discord_channel_admin_create_requires_category_id_and_name(self):
+        config = self._make_discord_admin_config()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            missing_name = json.loads(send_message_tool({
+                "action": "create_text_channel_in_category",
+                "category_id": "123456789012345678",
+            }))
+            bad_name = json.loads(send_message_tool({
+                "action": "create_text_channel_in_category",
+                "category_id": "123456789012345678",
+                "name": "general",
+            }))
+
+        assert "name/new_name is required" in missing_name["error"]
+        assert "outside approved SkyVision Next lane names" in bad_name["error"]
+        api_mock.assert_not_called()
+
+    def test_discord_channel_admin_rejects_channel_outside_approved_category_before_patch(self):
+        config = self._make_discord_admin_config(category_id="123456789012345678")
+
+        async def fake_api(_token, method, path, *, json_body=None):
+            if method == "GET" and path == "/channels/222222222222222222":
+                return {"id": "222222222222222222", "name": "frontend", "type": 0, "parent_id": "999999999999999999"}, None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api) as api_mock:
+            result = json.loads(send_message_tool({
+                "action": "rename_channel_by_id",
+                "category_id": "123456789012345678",
+                "channel_id": "222222222222222222",
+                "new_name": "frontend",
+            }))
+
+        assert "error" in result
+        assert "channel ID is outside approved SkyVision Next category" in result["error"]
+        assert api_mock.call_count == 1
+
+    def test_discord_channel_admin_rename_happy_path_is_bounded_mock_only(self):
+        config = self._make_discord_admin_config(category_id="123456789012345678")
+        calls = []
+
+        async def fake_api(token, method, path, *, json_body=None):
+            calls.append((token, method, path, json_body))
+            if method == "GET" and path == "/channels/222222222222222222":
+                return {"id": "222222222222222222", "name": "sky-next-frontend", "type": 0, "parent_id": "123456789012345678"}, None
+            if method == "PATCH" and path == "/channels/222222222222222222":
+                assert json_body == {"name": "frontend"}
+                return {"id": "222222222222222222", "name": "frontend", "type": 0, "parent_id": "123456789012345678"}, None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api):
+            result = json.loads(send_message_tool({
+                "action": "rename_channel_by_id",
+                "category_id": "123456789012345678",
+                "channel_id": "222222222222222222",
+                "new_name": "frontend",
+            }))
+
+        assert result["success"] is True
+        assert result["category_id"] == "123456789012345678"
+        assert result["channel_id"] == "222222222222222222"
+        assert result["new_name"] == "frontend"
+        assert all(call[1] in {"GET", "PATCH"} for call in calls)
+        assert "dummy-discord-token" not in json.dumps(result)
+
+    def test_discord_channel_admin_create_happy_path_is_bounded_text_channel_mock_only(self):
+        config = self._make_discord_admin_config(category_id="123456789012345678")
+        calls = []
+
+        async def fake_api(token, method, path, *, json_body=None):
+            calls.append((token, method, path, json_body))
+            if method == "GET" and path == "/channels/123456789012345678":
+                return {"id": "123456789012345678", "name": "SkyVision Next", "type": 4, "guild_id": "111111111111111111"}, None
+            if method == "GET" and path == "/guilds/111111111111111111/channels":
+                return [
+                    {"id": "222222222222222222", "name": "frontend", "type": 0, "parent_id": "123456789012345678", "position": 1},
+                    {"id": "333333333333333333", "name": "general", "type": 0, "parent_id": "999999999999999999", "position": 2},
+                ], None
+            if method == "POST" and path == "/guilds/111111111111111111/channels":
+                assert json_body == {"name": "chatbot", "type": 0, "parent_id": "123456789012345678"}
+                return {"id": "444444444444444444", "name": "chatbot", "type": 0, "parent_id": "123456789012345678"}, None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api):
+            result = json.loads(send_message_tool({
+                "action": "create_text_channel_in_category",
+                "category_id": "123456789012345678",
+                "name": "chatbot",
+            }))
+
+        assert result["success"] is True
+        assert result["channel_id"] == "444444444444444444"
+        assert result["name"] == "chatbot"
+        assert result["existed"] is False
+        assert all(call[1] in {"GET", "POST"} for call in calls)
+        assert "dummy-discord-token" not in json.dumps(result)
+
+    def test_discord_channel_admin_list_category_channels_filters_children(self):
+        config = self._make_discord_admin_config(category_id="123456789012345678")
+
+        async def fake_api(_token, method, path, *, json_body=None):
+            if method == "GET" and path == "/channels/123456789012345678":
+                return {"id": "123456789012345678", "name": "SkyVision Next", "type": 4, "guild_id": "111111111111111111"}, None
+            if method == "GET" and path == "/guilds/111111111111111111/channels":
+                return [
+                    {"id": "222222222222222222", "name": "backend", "type": 0, "parent_id": "123456789012345678", "position": 2},
+                    {"id": "333333333333333333", "name": "random", "type": 0, "parent_id": "999999999999999999", "position": 1},
+                ], None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api):
+            result = json.loads(send_message_tool({
+                "action": "list_category_channels",
+                "category_id": "123456789012345678",
+            }))
+
+        assert result["success"] is True
+        assert result["count"] == 1
+        assert result["channels"] == [{
+            "channel_id": "222222222222222222",
+            "name": "backend",
+            "type": 0,
+            "parent_id": "123456789012345678",
+            "position": 2,
+        }]
+
+    def test_discord_thread_rename_action_schema_is_bounded(self):
+        action_enum = SEND_MESSAGE_SCHEMA["parameters"]["properties"]["action"]["enum"]
+        properties = SEND_MESSAGE_SCHEMA["parameters"]["properties"]
+
+        assert "rename_thread_by_id" in action_enum
+        assert "parent_channel_id" in properties
+        assert "approved SkyVision Next parent channel ID" in properties["parent_channel_id"]["description"]
+        assert "new_title" in properties
+        assert not {
+            "delete_thread",
+            "move_thread",
+            "archive_thread",
+            "lock_thread",
+            "edit_message",
+            "delete_message",
+            "set_permissions",
+            "create_webhook",
+        } & set(action_enum)
+        assert "dummy-discord-token" not in json.dumps(SEND_MESSAGE_SCHEMA)
+
+    def test_discord_thread_rename_parent_allowlist_covers_all_skyvision_lanes(self):
+        assert _DISCORD_APPROVED_THREAD_RENAME_PARENT_IDS == frozenset(_DISCORD_SKYVISION_NEXT_CANONICAL_LANES.values())
+        assert _DISCORD_APPROVED_THREAD_RENAME_PARENT_IDS == _DISCORD_APPROVED_THREAD_IDS
+
+        for lane_name, channel_id in _DISCORD_SKYVISION_NEXT_CANONICAL_LANES.items():
+            accepted, error = _validate_thread_rename_parent_id(channel_id)
+            assert error is None, lane_name
+            assert accepted == channel_id
+
+        rejected, error = _validate_thread_rename_parent_id("1282928816104276019")
+        assert rejected is None
+        assert error is not None
+        assert "approved SkyVision Next lane" in error
+
+    def test_discord_thread_rename_rejects_missing_required_params_before_api(self):
+        config = self._make_discord_admin_config()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            missing_thread = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "Short title",
+            }))
+            missing_parent = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "new_title": "Short title",
+            }))
+            missing_title = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852444407140402",
+            }))
+
+        assert "thread_id is required" in missing_thread["error"]
+        assert "parent_channel_id is required" in missing_parent["error"]
+        assert "new_title is required" in missing_title["error"]
+        api_mock.assert_not_called()
+
+    def test_discord_thread_rename_rejects_unapproved_and_nonnumeric_ids_before_api(self):
+        config = self._make_discord_admin_config()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            bad_parent = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1282928816104276019",
+                "new_title": "Short title",
+            }))
+            nonnumeric_thread = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "not-a-snowflake",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "Short title",
+            }))
+            nonnumeric_parent = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "not-a-snowflake",
+                "new_title": "Short title",
+            }))
+
+        assert "approved SkyVision Next lane" in bad_parent["error"]
+        assert "thread_id must be a numeric Discord snowflake" in nonnumeric_thread["error"]
+        assert "parent_channel_id must be a numeric Discord snowflake" in nonnumeric_parent["error"]
+        api_mock.assert_not_called()
+
+    def test_discord_thread_rename_rejects_empty_newline_and_control_titles_before_api(self):
+        config = self._make_discord_admin_config()
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.send_message_tool._discord_api_request", new=AsyncMock()) as api_mock:
+            empty = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "   ",
+            }))
+            newline = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "Bad\nTitle",
+            }))
+            control = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "Bad\u0007Title",
+            }))
+
+        assert "new_title is required" in empty["error"]
+        assert "must not contain newlines" in newline["error"]
+        assert "control characters" in control["error"]
+        api_mock.assert_not_called()
+
+    def test_discord_thread_rename_refuses_parent_mismatch_before_patch(self):
+        config = self._make_discord_admin_config()
+
+        async def fake_api(_token, method, path, *, json_body=None):
+            if method == "GET" and path == "/channels/222222222222222222":
+                return {
+                    "id": "222222222222222222",
+                    "name": "Long old title",
+                    "type": 11,
+                    "parent_id": "1504852408227069993",
+                    "thread_metadata": {"archived": False, "locked": False},
+                }, None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api) as api_mock:
+            result = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "Short title",
+            }))
+
+        assert "thread.parent_id does not match approved parent_channel_id" in result["error"]
+        assert api_mock.call_count == 1
+
+    def test_discord_thread_rename_refuses_archived_or_locked_thread_before_patch(self):
+        config = self._make_discord_admin_config()
+
+        async def fake_api(_token, method, path, *, json_body=None):
+            if method == "GET" and path == "/channels/222222222222222222":
+                return {
+                    "id": "222222222222222222",
+                    "name": "Long old title",
+                    "type": 11,
+                    "parent_id": "1504852444407140402",
+                    "thread_metadata": {"archived": True, "locked": False},
+                }, None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api):
+            result = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852444407140402",
+                "new_title": "Short title",
+            }))
+
+        assert "archived or locked" in result["error"]
+
+    def test_discord_thread_rename_happy_path_returns_old_and_new_title_mock_only(self):
+        config = self._make_discord_admin_config()
+        calls = []
+
+        async def fake_api(token, method, path, *, json_body=None):
+            calls.append((token, method, path, json_body))
+            if method == "GET" and path == "/channels/222222222222222222":
+                return {
+                    "id": "222222222222222222",
+                    "name": "Very long backend title",
+                    "type": 11,
+                    "parent_id": "1504852408227069993",
+                    "thread_metadata": {"archived": False, "locked": False},
+                }, None
+            if method == "PATCH" and path == "/channels/222222222222222222":
+                assert json_body == {"name": "Short backend title"}
+                return {
+                    "id": "222222222222222222",
+                    "name": "Short backend title",
+                    "type": 11,
+                    "parent_id": "1504852408227069993",
+                    "thread_metadata": {"archived": False, "locked": False},
+                }, None
+            raise AssertionError(f"unexpected API call {method} {path} {json_body}")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._discord_api_request", side_effect=fake_api):
+            result = json.loads(send_message_tool({
+                "action": "rename_thread_by_id",
+                "thread_id": "222222222222222222",
+                "parent_channel_id": "1504852408227069993",
+                "new_title": "Short backend title",
+            }))
+
+        assert result == {
+            "success": True,
+            "platform": "discord",
+            "action": "rename_thread_by_id",
+            "thread_id": "222222222222222222",
+            "parent_channel_id": "1504852408227069993",
+            "old_title": "Very long backend title",
+            "new_title": "Short backend title",
+        }
+        assert [call[1] for call in calls] == ["GET", "PATCH"]
+        assert all("/messages" not in call[2] for call in calls)
+        assert "dummy-discord-token" not in json.dumps(result)
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()
@@ -293,6 +925,87 @@ class TestSendMessageTool:
             thread_id=None,
             user_id="user-123",
         )
+
+    def test_cross_chat_discord_send_records_route_back_context(self):
+        discord_cfg = SimpleNamespace(enabled=True, token="dummy-discord-token", extra={})
+        config = SimpleNamespace(
+            platforms={Platform.DISCORD: discord_cfg},
+            get_home_channel=lambda _platform: None,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch(
+                 "tools.send_message_tool._send_to_platform",
+                 new=AsyncMock(return_value={
+                     "success": True,
+                     "platform": "discord",
+                     "chat_id": "1504852408227069993",
+                     "message_id": "1509999999999999999",
+                 }),
+             ), \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock, \
+             patch("gateway.routing_context.record_outbound_route", return_value=True) as route_mock:
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "discord",
+                "HERMES_SESSION_CHAT_ID": "1509473981860941844",
+                "HERMES_SESSION_CHAT_NAME": "Ivs discount thread",
+                "HERMES_SESSION_THREAD_ID": "1509473981860941844",
+                "HERMES_SESSION_USER_ID": "1391703330711142472",
+                "HERMES_SESSION_USER_NAME": "Ivs",
+            }.get(name, default)
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "discord:1504852408227069993",
+                        "message": "Иво/Alex, моля проверете казуса",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["route_back_recorded"] is True
+        mirror_args = mirror_mock.call_args.args
+        assert mirror_args[:2] == ("discord", "1504852408227069993")
+        assert "Return target: `discord:1509473981860941844`" in mirror_args[2]
+        assert "Delivered message:\nИво/Alex, моля проверете казуса" in mirror_args[2]
+        route_mock.assert_called_once()
+        route_kwargs = route_mock.call_args.kwargs
+        assert route_kwargs["platform"] == "discord"
+        assert route_kwargs["chat_id"] == "1504852408227069993"
+        assert route_kwargs["message_id"] == "1509999999999999999"
+        assert route_kwargs["return_target"] == "discord:1509473981860941844"
+        assert route_kwargs["return_user"] == "Ivs"
+
+    def test_route_back_context_is_only_added_for_cross_chat_mirrors(self):
+        same_chat = _with_route_back_context(
+            "hello",
+            return_target="discord:123",
+            delivered_target="discord:123",
+        )
+        routed = _with_route_back_context(
+            "hello",
+            return_target="discord:123",
+            return_label="Ivs thread",
+            return_user="Ivs",
+            delivered_target="discord:456",
+        )
+
+        assert same_chat == "hello"
+        assert "Return target: `discord:123`" in routed
+        assert "Delivered message:\nhello" in routed
+
+    def test_discord_ivs_alias_mentions_are_rendered_and_allowed(self):
+        payload = _discord_message_payload("@Ivs виж update-а")
+
+        assert payload["content"] == "<@1391703330711142472> виж update-а"
+        assert payload["allowed_mentions"] == {
+            "parse": [],
+            "users": ["1391703330711142472"],
+        }
 
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
@@ -1153,6 +1866,52 @@ class TestSendDiscordThreadId:
         assert result["success"] is True
         assert result["message_id"] == "9876543210"
         assert result["chat_id"] == "111"
+
+    def test_discord_alias_mentions_are_rendered_and_allowed(self):
+        """Plain @Alex/@Ivo text becomes real user mentions with explicit pings."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "9876543210"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "111", "@Алекс @Иво моля проверете")
+
+        assert result["success"] is True
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["content"] == (
+            "<@1282940511962791959> <@1283039346295050271> моля проверете"
+        )
+        assert payload["allowed_mentions"] == {
+            "parse": [],
+            "users": ["1282940511962791959", "1283039346295050271"],
+        }
+
+    def test_discord_existing_user_mention_is_explicitly_allowed(self):
+        """Existing Discord mention tokens still get allowed_mentions users."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "9876543210"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "111", "<@1282940511962791959> ping")
+
+        assert result["success"] is True
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["content"] == "<@1282940511962791959> ping"
+        assert payload["allowed_mentions"] == {
+            "parse": [],
+            "users": ["1282940511962791959"],
+        }
+
+    def test_discord_leading_bare_addressees_are_rendered_as_mentions(self):
+        """Handoff-style 'Иво/Alex, ...' addressees should notify people."""
+        mock_session, _ = self._build_mock(200, response_data={"id": "9876543210"})
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = self._run("tok", "111", "Иво/Alex, моля проверете казуса")
+
+        assert result["success"] is True
+        payload = mock_session.post.call_args.kwargs["json"]
+        assert payload["content"] == (
+            "<@1283039346295050271>/<@1282940511962791959>, моля проверете казуса"
+        )
+        assert payload["allowed_mentions"] == {
+            "parse": [],
+            "users": ["1283039346295050271", "1282940511962791959"],
+        }
 
     def test_error_status_returns_error_dict(self):
         """Non-200/201 responses return an error dict."""
@@ -2569,4 +3328,3 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
-

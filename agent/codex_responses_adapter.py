@@ -40,6 +40,24 @@ _TOOL_CALL_LEAK_PATTERN = re.compile(
 )
 
 
+def _as_list(value: Any) -> list[Any]:
+    """Return a list for collection-like Codex fields.
+
+    Codex Responses payloads occasionally surface nested fields as None during
+    partial or edge-case response shapes.  Only real list/tuple values are
+    treated as iterable collections; everything else is coerced to an empty
+    list so normalization cannot raise ``TypeError: 'NoneType' object is not
+    iterable``.
+    """
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Multimodal content helpers
 # ---------------------------------------------------------------------------
@@ -62,7 +80,8 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     recognized parts — callers fall back to the string path.
     """
     text_type = "output_text" if role == "assistant" else "input_text"
-    if not isinstance(content, list):
+    content = _as_list(content)
+    if not content:
         return []
     converted: List[Dict[str, Any]] = []
     for part in content:
@@ -108,32 +127,30 @@ def _summarize_user_message_for_log(content: Any) -> str:
         return ""
     if isinstance(content, str):
         return content
-    if isinstance(content, list):
-        text_bits: List[str] = []
-        image_count = 0
-        for part in content:
-            if isinstance(part, str):
-                if part:
-                    text_bits.append(part)
-                continue
-            if not isinstance(part, dict):
-                continue
-            ptype = str(part.get("type") or "").strip().lower()
-            if ptype in {"text", "input_text", "output_text"}:
-                text = part.get("text")
-                if isinstance(text, str) and text:
-                    text_bits.append(text)
-            elif ptype in {"image_url", "input_image"}:
-                image_count += 1
-        summary = " ".join(text_bits).strip()
-        if image_count:
-            note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
-            summary = f"{note} {summary}" if summary else note
-        return summary
-    try:
-        return str(content)
-    except Exception:
+    if not isinstance(content, list):
         return ""
+    text_bits: List[str] = []
+    image_count = 0
+    for part in content:
+        if isinstance(part, str):
+            if part:
+                text_bits.append(part)
+            continue
+        if not isinstance(part, dict):
+            continue
+        ptype = str(part.get("type") or "").strip().lower()
+        if ptype in {"text", "input_text", "output_text"}:
+            text = part.get("text")
+            if isinstance(text, str) and text:
+                text_bits.append(text)
+        elif ptype in {"image_url", "input_image"}:
+            image_count += 1
+    summary = " ".join(text_bits).strip()
+    if image_count:
+        note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
+        summary = f"{note} {summary}" if summary else note
+    return summary
+
 
 
 # ---------------------------------------------------------------------------
@@ -873,8 +890,8 @@ def _extract_responses_reasoning_text(item: Any) -> str:
 
 def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     """Normalize a Responses API object to an assistant_message-like object."""
-    output = getattr(response, "output", None)
-    if not isinstance(output, list) or not output:
+    output = _as_list(getattr(response, "output", None))
+    if not output:
         # The Codex backend can return empty output when the answer was
         # delivered entirely via stream events. Check output_text as a
         # last-resort fallback before raising.

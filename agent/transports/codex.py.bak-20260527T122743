@@ -11,49 +11,6 @@ from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
 
-def _ensure_responses_tool_required_lists(tools: Any) -> Any:
-    """Normalize Responses API function tool schemas.
-
-    Some Hermes tool parameter schemas omit the JSON Schema `required` key
-    when there are no required parameters. The openai-codex Responses path
-    expects an iterable list there, so make the absence explicit as [].
-    """
-    if not isinstance(tools, list):
-        return tools
-
-    for tool in tools:
-        if not isinstance(tool, dict):
-            continue
-
-        # Responses-style: {"type": "function", "name": ..., "parameters": {...}}
-        # OpenAI chat-style fallback: {"type": "function", "function": {"parameters": {...}}}
-        containers = [tool]
-        fn = tool.get("function")
-        if isinstance(fn, dict):
-            containers.append(fn)
-
-        for container in containers:
-            if not isinstance(container, dict):
-                continue
-
-            params = container.get("parameters")
-            if not isinstance(params, dict):
-                # Function tools without parameters should still have an object schema.
-                params = {"type": "object", "properties": {}, "required": []}
-                container["parameters"] = params
-                continue
-
-            params.setdefault("type", "object")
-
-            if not isinstance(params.get("properties"), dict):
-                params["properties"] = {}
-
-            if not isinstance(params.get("required"), list):
-                params["required"] = []
-
-    return tools
-
-
 class ResponsesApiTransport(ProviderTransport):
     """Transport for api_mode='codex_responses'.
 
@@ -75,7 +32,7 @@ class ResponsesApiTransport(ProviderTransport):
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
         """Convert OpenAI tool schemas to Responses API function definitions."""
         from agent.codex_responses_adapter import _responses_tools
-        return _ensure_responses_tool_required_lists(_responses_tools(tools))
+        return _responses_tools(tools)
 
     def build_kwargs(
         self,
@@ -135,7 +92,7 @@ class ResponsesApiTransport(ProviderTransport):
         _effort_clamp = {"minimal": "low"}
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
-        response_tools = _ensure_responses_tool_required_lists(_responses_tools(tools))
+        response_tools = _responses_tools(tools)
         kwargs = {
             "model": model,
             "instructions": instructions,
@@ -179,12 +136,6 @@ class ResponsesApiTransport(ProviderTransport):
                 github_reasoning = params.get("github_reasoning_extra")
                 if github_reasoning is not None:
                     kwargs["reasoning"] = github_reasoning
-            elif is_codex_backend:
-                # ChatGPT Codex backend currently fails in the Hermes gateway
-                # when encrypted reasoning include / reasoning summary is requested.
-                # Keep normal answer generation and tool-calling, but do not request
-                # encrypted reasoning artifacts from this backend.
-                kwargs["include"] = []
             else:
                 kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
                 kwargs["include"] = ["reasoning.encrypted_content"]
