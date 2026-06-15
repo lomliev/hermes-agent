@@ -77,7 +77,11 @@ environment is ready for approved configuration-only validation.
 8. **Enforcement gate:** switch `dry_run: false` only after dry-run output,
    rollback steps, and ownership for live monitoring are all agreed.
 
-Example dry-run shape with placeholder IDs:
+Example dry-run shape with placeholder IDs. A machine-checkable JSON version
+lives in
+[`docs/runtime_guard/examples/dry-run-activation.json`](examples/dry-run-activation.json)
+and is validated by
+[`tests/gateway/test_runtime_guard_downstream_example.py`](../../tests/gateway/test_runtime_guard_downstream_example.py).
 
 ```yaml
 platforms:
@@ -170,6 +174,7 @@ Targeted runtime guard pytest package:
 
 ```bash
 python -m pytest \
+  tests/gateway/test_runtime_guard_downstream_example.py \
   tests/gateway/test_runtime_guard.py \
   tests/gateway/test_runtime_guard_platform_base.py \
   tests/gateway/test_runtime_guard_streaming.py \

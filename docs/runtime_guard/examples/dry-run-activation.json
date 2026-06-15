@@ -1,0 +1,35 @@
+{
+  "platforms": {
+    "discord": {
+      "enabled": true,
+      "extra": {
+        "runtime_guard": {
+          "enabled": true,
+          "provider": "noop",
+          "dry_run": true,
+          "fail_closed": true,
+          "scope": {
+            "platforms": [
+              "discord"
+            ],
+            "chat_ids": [
+              "example-discord-channel-001"
+            ],
+            "thread_ids": [
+              "example-discord-thread-001"
+            ]
+          },
+          "streaming": {
+            "policy": "guard_first_visible"
+          },
+          "delivery_surfaces": {
+            "assistant_final": "guard",
+            "assistant_stream": "disable",
+            "tool_progress": "disable",
+            "send_message_tool": "block"
+          }
+        }
+      }
+    }
+  }
+}
