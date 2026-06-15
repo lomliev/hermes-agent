@@ -1,7 +1,14 @@
+import dataclasses
 import json
+import re
 from pathlib import Path
 
-from gateway.runtime_guard import GuardContext, RuntimeGuardConfig, get_runtime_guard_manager
+from gateway.runtime_guard import (
+    GuardContext,
+    RuntimeGuardConfig,
+    RuntimeGuardDeliveryPolicy,
+    get_runtime_guard_manager,
+)
 
 
 EXAMPLE_PATH = (
@@ -10,6 +17,12 @@ EXAMPLE_PATH = (
     / "runtime_guard"
     / "examples"
     / "dry-run-activation.json"
+)
+READINESS_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "docs"
+    / "runtime_guard"
+    / "downstream-readiness.md"
 )
 
 
@@ -21,6 +34,29 @@ def _iter_keys(value):
     elif isinstance(value, list):
         for item in value:
             yield from _iter_keys(item)
+
+
+def test_downstream_readiness_default_delivery_policy_matches_code_defaults():
+    text = READINESS_PATH.read_text(encoding="utf-8")
+    section = text.split("Current default delivery policy highlights:", 1)[1].split(
+        "\n## ",
+        1,
+    )[0]
+    documented = {
+        match.group("surface"): match.group("policy")
+        for match in re.finditer(
+            r"^- `(?P<surface>[^`]+)`: `(?P<policy>[^`]+)`$",
+            section,
+            re.MULTILINE,
+        )
+    }
+    defaults = RuntimeGuardDeliveryPolicy()
+    expected = {
+        field.name: getattr(defaults, field.name)
+        for field in dataclasses.fields(RuntimeGuardDeliveryPolicy)
+    }
+
+    assert documented == expected
 
 
 def test_downstream_dry_run_activation_example_matches_runtime_guard_config():
