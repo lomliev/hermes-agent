@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import json
 import sys
 import time
 import types
@@ -1351,6 +1352,53 @@ class TerminalCommandAgent:
         return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
+class PythonFailureProgressAgent:
+    """Emits a Python/unittest terminal failure wrapped in JSON output."""
+
+    CMD = (
+        "PYTHONPATH=dev_mvp python3 -m unittest "
+        "dev_mvp.tests.test_assistant_core.AssistantTranscriptTests."
+        "test_transcript_south_black_sea_gift_followups_do_not_drift_to_plovdiv_or_support"
+    )
+
+    RESULT = json.dumps(
+        {
+            "output": (
+                "test_transcript_south_black_sea_gift_followups_do_not_drift_to_plovdiv_or_support "
+                "(dev_mvp.tests.test_assistant_core.AssistantTranscriptTests."
+                "test_transcript_south_black_sea_gift_followups_do_not_drift_to_plovdiv_or_support) ... FAIL\n"
+                "\n======================================================================\n"
+                "FAIL: test_transcript_south_black_sea_gift_followups_do_not_drift_to_plovdiv_or_support "
+                "(dev_mvp.tests.test_assistant_core.AssistantTranscriptTests."
+                "test_transcript_south_black_sea_gift_followups_do_not_drift_to_plovdiv_or_support)\n"
+                "Traceback (most recent call last):\n"
+                '  File "/tmp/example.py", line 42, in test\n'
+                "AssertionError: drifted to Plovdiv support instead of South Black Sea catalog\n"
+                "\nFAILED (failures=1)"
+            )
+        }
+    )
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", self.CMD, {"command": self.CMD})
+        cb(
+            "tool.completed",
+            "terminal",
+            None,
+            None,
+            duration=12.8,
+            is_error=True,
+            result=self.RESULT,
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
 @pytest.mark.asyncio
 async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path):
     """Terminal progress on a markdown-capable (supports_code_blocks) gateway
@@ -1404,6 +1452,63 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     assert "node --version" not in all_content
     # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_discord_progress_explains_python_failure_without_raw_json(monkeypatch, tmp_path):
+    """Discord progress should show useful Python failure detail, not raw JSON."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  platforms:\n    discord:\n      tool_progress_explanations: true\n",
+        encoding="utf-8",
+    )
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = PythonFailureProgressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="discord-progress",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-discord-python-failure-progress",
+        session_key="agent:main:discord:dm:discord-progress",
+    )
+
+    assert result["final_response"] == "done"
+    contents = [call["content"] for call in adapter.sent] + [
+        call["content"] for call in adapter.edits
+    ]
+    final = max(contents, key=len) if contents else ""
+    assert "Пускам кратък Python script" in final
+    assert "Резултат: Python проверката върна проблем за 12.8s" in final
+    assert (
+        "FAIL в `test_transcript_south_black_sea_gift_followups_do_not_drift_to_plovdiv_or_support`"
+        in final
+    )
+    assert "AssertionError: drifted to Plovdiv support instead of South Black Sea catalog" in final
+    assert "FAILED (failures=1)" in final
+    assert '{"output"' not in final
+    assert "\n\n" in final
 
 
 @pytest.mark.asyncio

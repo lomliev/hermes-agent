@@ -14307,9 +14307,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
+        _tool_progress_explanations_enabled = _resolve_gateway_display_bool(
+            user_config,
+            platform_key,
+            "tool_progress_explanations",
+            default=source.platform == Platform.DISCORD,
+            platform=source.platform,
+        )
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        last_tool_context = {}
         # True when the previously enqueued progress line was a terminal
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
@@ -14356,6 +14364,323 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as _ack_err:
                 logger.debug("voice ack schedule failed: %s", _ack_err)
 
+        def _tool_progress_arg(args: Optional[dict], *keys: str) -> str:
+            if not isinstance(args, dict):
+                return ""
+            for key in keys:
+                value = args.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return ""
+
+        def _tool_progress_brief(value: Any, limit: int = 120) -> str:
+            if value is None:
+                return ""
+            text = str(value).strip()
+            if not text:
+                return ""
+            import re as _re
+            text = _re.sub(r"\s+", " ", text)
+            if len(text) > limit:
+                text = text[: limit - 3].rstrip() + "..."
+            return text
+
+        def _tool_progress_result_text(result: Any, limit: int = 4000) -> str:
+            if result is None:
+                return ""
+            if isinstance(result, str):
+                text = result
+            else:
+                try:
+                    text = json.dumps(result, ensure_ascii=False, default=str)
+                except Exception:
+                    text = str(result)
+            text = text.strip()
+            if len(text) > limit:
+                text = text[:limit]
+            return text
+
+        def _tool_progress_result_payload(result: Any) -> dict:
+            if isinstance(result, dict):
+                return result
+            if isinstance(result, str):
+                text = result.strip()
+                if text.startswith("{") and text.endswith("}"):
+                    try:
+                        payload = json.loads(text)
+                        if isinstance(payload, dict):
+                            return payload
+                    except Exception:
+                        return {}
+            return {}
+
+        def _tool_progress_result_output(result: Any) -> str:
+            payload = _tool_progress_result_payload(result)
+            if not payload:
+                return _tool_progress_result_text(result, limit=8000)
+            parts = []
+            for key in ("output", "stdout", "stderr", "error", "message", "traceback"):
+                value = payload.get(key)
+                if isinstance(value, str) and value.strip():
+                    parts.append(value.strip())
+            if parts:
+                return "\n".join(parts)
+            return _tool_progress_result_text(payload, limit=8000)
+
+        def _tool_progress_python_issue_detail(result: Any) -> str:
+            output = _tool_progress_result_output(result)
+            if not output:
+                return ""
+            import re as _re
+
+            lines = [line.rstrip() for line in output.splitlines()]
+            nonempty = [line.strip() for line in lines if line.strip()]
+            found: list[str] = []
+
+            for line in nonempty:
+                match = _re.match(
+                    r"^([A-Za-z_][\w]*)\s+\(([^)]+)\)\s+\.\.\.\s+(FAIL|ERROR)\b",
+                    line,
+                )
+                if match:
+                    found.append(
+                        f"{match.group(3)} в `{match.group(1)}` ({match.group(2)})"
+                    )
+                    break
+
+            if not found:
+                for line in nonempty:
+                    match = _re.match(r"^(FAIL|ERROR):\s+(.+)$", line)
+                    if match:
+                        found.append(f"{match.group(1)}: {match.group(2)}")
+                        break
+
+            for line in nonempty:
+                if _re.match(r"^FAILED\s+\(.+\)$", line):
+                    continue
+                match = _re.match(r"^FAILED\s+(.+?)(?:\s+-\s+(.+))?$", line)
+                if match:
+                    detail = match.group(1)
+                    if match.group(2):
+                        detail = f"{detail}: {match.group(2)}"
+                    found.append(f"FAILED: {detail}")
+                    break
+
+            exception_candidates = []
+            for line in nonempty:
+                stripped = line.lstrip("E ").strip()
+                if _re.match(r"^(AssertionError|[A-Za-z_][\w.]*Error|Exception):", stripped):
+                    exception_candidates.append(stripped)
+            if exception_candidates:
+                found.append(exception_candidates[-1])
+
+            for line in reversed(nonempty):
+                if _re.match(r"^FAILED\s+\(.+\)$", line) or _re.match(
+                    r"^ERROR:\s+", line
+                ):
+                    found.append(line)
+                    break
+
+            if not found:
+                payload = _tool_progress_result_payload(result)
+                for key in ("stderr", "error", "message"):
+                    value = payload.get(key)
+                    if isinstance(value, str) and value.strip():
+                        found.append(value.strip().splitlines()[0])
+                        break
+
+            if not found and nonempty:
+                found.append(nonempty[0])
+
+            unique = []
+            for item in found:
+                brief = _tool_progress_brief(item, 180)
+                if brief and brief not in unique:
+                    unique.append(brief)
+            return "; ".join(unique[:3])
+
+        def _tool_progress_explanation(tool_name: str, preview: Optional[str], args: Optional[dict]) -> str:
+            if not _tool_progress_explanations_enabled:
+                return ""
+            tool = str(tool_name or "")
+            preview_text = str(preview or "")
+            command = _tool_progress_arg(args, "command", "cmd", "input")
+            lower_command = command.lower()
+            lower_preview = preview_text.lower()
+
+            if tool == "skill_view":
+                skill = _tool_progress_brief(
+                    _tool_progress_arg(args, "name", "skill", "id") or preview_text,
+                    80,
+                )
+                if skill:
+                    return f"Зареждам skill-а `{skill}`, защото той задава правилата за тази част от задачата."
+                return "Зареждам релевантния skill, за да следвам правилния workflow вместо да действам наизуст."
+            if tool in {"vision_analyze", "image_analyze"}:
+                target = _tool_progress_brief(preview_text, 90)
+                if target:
+                    return f"Преглеждам screenshot/browser състоянието с конкретна цел: {target}"
+                return "Преглеждам видимото състояние от screenshot/browser-а, за да стъпя върху реални UI доказателства."
+            if tool == "todo":
+                if "planning" in lower_preview:
+                    return "Подреждам работния checklist, за да е ясно кои проверки ще мина и какъв ред следвам."
+                if "updating" in lower_preview:
+                    return "Обновявам checklist-а според последния резултат, за да отбележа готовото и да избера следващата стъпка."
+                return "Поддържам работния checklist актуален, докато задачата се движи."
+            if tool == "write_file":
+                path = _tool_progress_arg(args, "path", "file")
+                name = path.rsplit("/", 1)[-1] if path else ""
+                if path.startswith("/tmp/"):
+                    detail = f" `{name}`" if name else ""
+                    return f"Записвам временен contract/работен файл{detail}; това не е промяна в продукта."
+                detail = f" `{path}`" if path else ""
+                return f"Записвам файл{detail} в рамките на текущата задача; след това трябва да има проверка."
+            if tool in {"read_file", "open_file"}:
+                path = _tool_progress_arg(args, "path", "file")
+                if path:
+                    return f"Чета `{path}`, за да взема решение от реалния код или конфигурация."
+                return "Чета конкретен файл, за да взема решение от реалния код или конфигурация."
+            if tool in {"search_files", "rg", "grep"}:
+                query = _tool_progress_brief(
+                    _tool_progress_arg(args, "pattern", "query", "regex") or preview_text,
+                    90,
+                )
+                if query:
+                    return f"Търся `{query}`, за да намеря точните места в кода/логовете вместо да предполагам."
+                return "Търся точните места в кода/логовете, вместо да предполагам къде е проблемът."
+            if tool == "memory":
+                return "Записвам устойчиво предпочитание или правило, за да го използвам в следващи задачи."
+            if tool == "process":
+                if "wait" in lower_preview:
+                    proc = _tool_progress_brief(preview_text, 80)
+                    return f"Чакам вече стартиран background процес да върне резултат; самият процес продължава да работи. ({proc})"
+                if "poll" in lower_preview:
+                    return "Проверявам дали background процесът вече е приключил и има нов output за четене."
+                if "log" in lower_preview:
+                    return "Чета междинния output от background процеса, за да видя реалния напредък."
+                return "Следя background процес, който е стартиран по-рано в задачата."
+            if tool == "terminal":
+                if "mac-ops-bridge-submit-gitlab" in lower_command:
+                    return "Създавам confidential GitLab bridge issue, за да подам задачата към локалния Mac worker."
+                if "mac-ops-bridge-watch-gitlab" in lower_command:
+                    return "Чета GitLab bridge issue-то и търся progress/result note от Mac worker-а."
+                if "python" in lower_command:
+                    return "Пускам кратък Python script, за да извлека или проверя структурирани данни без ръчно гадаене."
+                if any(part in lower_command for part in ("rg ", "grep ", "find ")):
+                    return "Търся конкретен pattern във файлове или логове."
+                if any(part in lower_command for part in ("gcloud ", "ssh ", "scp ")):
+                    return "Правя контролирана infra/remote проверка и ще използвам output-а като evidence."
+                if "git " in lower_command:
+                    return "Проверявам Git състояние или история, за да не смесим чужди промени."
+                if any(part in lower_command for part in ("curl ", "http ", "wget ")):
+                    return "Проверявам endpoint/HTTP отговор, за да видя дали услугата е жива."
+                return "Изпълнявам shell стъпка и после ще прочета output-а, преди да продължа."
+            return "Това е техническа стъпка за събиране на доказателства или изпълнение на конкретна част от задачата."
+
+        def _tool_progress_result_summary(
+            tool_name: str,
+            result: Any,
+            duration: Optional[float],
+            is_error: bool,
+            context: Optional[dict],
+        ) -> str:
+            if not _tool_progress_explanations_enabled:
+                return ""
+            tool = str(tool_name or "")
+            if tool in {"todo", "skill_view", "memory"}:
+                return ""
+            duration_text = ""
+            try:
+                if duration is not None:
+                    duration_text = f" за {float(duration):.1f}s"
+            except Exception:
+                duration_text = ""
+            text = _tool_progress_result_text(result)
+            output_text = _tool_progress_result_output(result)
+            lower_text = text.lower()
+            lower_output_text = output_text.lower()
+            context_args = context.get("args") if isinstance(context, dict) else None
+            command = _tool_progress_arg(context_args, "command", "cmd", "input")
+            lower_command = command.lower()
+
+            if is_error:
+                if tool == "terminal" and "python" in lower_command:
+                    detail = _tool_progress_python_issue_detail(result)
+                    if detail:
+                        return f"Резултат: Python проверката върна проблем{duration_text}; {detail}"
+                detail = _tool_progress_brief(output_text or text, 180)
+                if detail:
+                    return f"Резултат: стъпката върна грешка{duration_text}; виждам: {detail}"
+                return f"Резултат: стъпката върна грешка{duration_text}; ще проверя причината преди да продължа."
+
+            if tool in {"search_files", "rg", "grep"}:
+                lines = [line for line in text.splitlines() if line.strip()]
+                if not lines:
+                    return f"Резултат: не намерих съвпадения{duration_text}; ще проверя друг pattern или друг файл."
+                return f"Резултат: намерих {len(lines)} потенциални съвпадения{duration_text}; следва да отворя релевантните редове."
+
+            if tool in {"read_file", "open_file"}:
+                if text:
+                    lines = len(text.splitlines())
+                    return f"Резултат: файлът е прочетен{duration_text} ({lines} реда); ще използвам това за следващото решение."
+                return f"Резултат: файлът е прочетен{duration_text}, но няма видимо съдържание."
+
+            if tool == "write_file":
+                return f"Резултат: временният/работният файл е записан{duration_text}; следващата стъпка трябва да го използва или провери."
+
+            if tool in {"vision_analyze", "image_analyze"}:
+                detail = _tool_progress_brief(text, 140)
+                if detail:
+                    return f"Резултат: извлякох визуално наблюдение{duration_text}: {detail}"
+                return f"Резултат: визуалната проверка приключи{duration_text}; продължавам с видимото evidence."
+
+            if tool == "process":
+                if "exit code 0" in lower_text or "finished with exit code 0" in lower_text:
+                    return f"Резултат: background процесът приключи успешно{duration_text}; ще прочета output-а."
+                if "finished with exit code" in lower_text:
+                    detail = _tool_progress_brief(text, 120)
+                    return f"Резултат: background процесът приключи с проблем{duration_text}; {detail}"
+                if text:
+                    return f"Резултат: има нов output от background процеса{duration_text}; ще го използвам за следващата стъпка."
+                return f"Резултат: процесът още няма финален output{duration_text}; ще продължа да го следя."
+
+            if tool == "terminal":
+                if "mac-ops-bridge-submit-gitlab" in lower_command:
+                    import re as _re
+                    iid_match = _re.search(r'"?issue_iid"?\s*[:=]\s*"?(\d+)"?', text)
+                    iid = f" #{iid_match.group(1)}" if iid_match else ""
+                    return f"Резултат: bridge issue{iid} е създаден{duration_text}; следва да го watch-на за progress/result note."
+                if "mac-ops-bridge-watch-gitlab" in lower_command:
+                    if '"state": "closed"' in text or "'state': 'closed'" in text:
+                        return f"Резултат: bridge issue-то е closed{duration_text}; ще прочета result note-а и ще продължа от evidence."
+                    if "latest_progress_note" in lower_text or "progress_notes" in lower_text:
+                        return f"Резултат: има progress note от Mac worker-а{duration_text}; ще го използвам вместо да гадая какво става."
+                    return f"Резултат: bridge watch върна данни{duration_text}; проверявам дали има result или само междинен progress."
+                if "python" in lower_command:
+                    if "traceback" in lower_output_text or "error" in lower_output_text:
+                        detail = _tool_progress_python_issue_detail(result) or _tool_progress_brief(output_text, 180)
+                        return f"Резултат: Python проверката върна проблем{duration_text}; {detail}"
+                    return f"Резултат: Python проверката приключи{duration_text}; ще използвам извлечените данни за следващата стъпка."
+                if any(part in lower_command for part in ("curl ", "http ", "wget ")):
+                    import re as _re
+                    status = _re.search(r"\b([1-5][0-9]{2})\b", text)
+                    if status:
+                        return f"Резултат: HTTP проверката върна {status.group(1)}{duration_text}; това показва текущото състояние на endpoint-а."
+                if "git " in lower_command:
+                    if "nothing to commit" in lower_text or "working tree clean" in lower_text:
+                        return f"Резултат: Git работното дърво изглежда чисто{duration_text}."
+                    return f"Резултат: Git командата приключи{duration_text}; ще преценя следващата стъпка според status/diff output-а."
+                if text:
+                    return f"Резултат: командата върна output{duration_text}; чета го и продължавам според evidence-а."
+                return f"Резултат: командата приключи{duration_text} без видим output."
+
+            return ""
+
+        def _with_tool_progress_explanation(message: str, explanation: str) -> str:
+            if not explanation:
+                return message
+            return f"{message}\n↳ {explanation}"
+
         # Auto-cleanup of temporary progress bubbles (Telegram + any adapter
         # that implements ``delete_message``). When enabled via
         # ``display.platforms.<platform>.cleanup_progress: true``, message IDs
@@ -14382,6 +14707,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
                 return
+            if event_type == "tool.started" and tool_name:
+                try:
+                    last_tool_context[str(tool_name)] = {
+                        "preview": preview,
+                        "args": args if isinstance(args, dict) else None,
+                    }
+                except Exception:
+                    pass
 
             # First-touch onboarding: the first time a tool takes longer than
             # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
@@ -14389,27 +14722,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # /verbose.  We only fire when (a) the user hasn't seen the hint
             # before and (b) /verbose is actually usable on this platform
             # (gateway gate must be open).  The CLI has its own trigger.
-            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
-                try:
-                    duration = kwargs.get("duration") or 0
-                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
-                        from agent.onboarding import (
-                            TOOL_PROGRESS_FLAG,
-                            is_seen,
-                            mark_seen,
-                            tool_progress_hint_gateway,
-                        )
-                        _cfg = _load_gateway_config()
-                        gate_on = is_truthy_value(
-                            cfg_get(_cfg, "display", "tool_progress_command"),
-                            default=False,
-                        )
-                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
-                            long_tool_hint_fired[0] = True
-                            progress_queue.put(tool_progress_hint_gateway())
-                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
-                except Exception as _hint_err:
-                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+            if event_type == "tool.completed":
+                if not long_tool_hint_fired[0]:
+                    try:
+                        duration = kwargs.get("duration") or 0
+                        if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                            from agent.onboarding import (
+                                TOOL_PROGRESS_FLAG,
+                                is_seen,
+                                mark_seen,
+                                tool_progress_hint_gateway,
+                            )
+                            _cfg = _load_gateway_config()
+                            gate_on = is_truthy_value(
+                                cfg_get(_cfg, "display", "tool_progress_command"),
+                                default=False,
+                            )
+                            if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                                long_tool_hint_fired[0] = True
+                                progress_queue.put(tool_progress_hint_gateway())
+                                mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                    except Exception as _hint_err:
+                        logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
+
+                if tool_progress_enabled:
+                    _result_summary = _tool_progress_result_summary(
+                        tool_name or "",
+                        kwargs.get("result"),
+                        kwargs.get("duration"),
+                        bool(kwargs.get("is_error")),
+                        last_tool_context.get(str(tool_name or "")),
+                    )
+                    if _result_summary:
+                        progress_queue.put(f"↳ {_result_summary}")
                 return
 
             # "_thinking" is assistant scratch text between tool calls.  It
@@ -14459,6 +14804,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
             emoji = get_tool_emoji(tool_name, default="⚙️")
+            _human_explanation = _tool_progress_explanation(tool_name, preview, args)
 
             # Markdown-capable platforms render a terminal command as a fenced
             # code block instead of the compact `terminal: "cmd…"` preview.
@@ -14494,7 +14840,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _block_header = (
                     "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
                 )
-                _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
+                _human_line = f"↳ {_human_explanation}\n" if _human_explanation else ""
+                _code_block_full = f"{_block_header}{_human_line}```\n{_cmd_full}\n```"
                 # Single-line, capped preview for non-verbose modes.
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
@@ -14505,7 +14852,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_short = _cmd_short[:_cap - 3] + "..."
                 elif _multiline:
                     _cmd_short = _cmd_short + " ..."
-                _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
+                _code_block_short = f"{_block_header}{_human_line}```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
@@ -14523,11 +14870,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # detail.  Platform message-length limits handle the rest.
                     if _pl > 0 and len(args_str) > _pl:
                         args_str = args_str[:_pl - 3] + "..."
-                    msg = f"{emoji} {tool_name}({list(args.keys())})\n{args_str}"
+                    msg = _with_tool_progress_explanation(
+                        f"{emoji} {tool_name}({list(args.keys())})\n{args_str}",
+                        _human_explanation,
+                    )
                 elif preview:
-                    msg = f"{emoji} {tool_name}: \"{preview}\""
+                    msg = _with_tool_progress_explanation(
+                        f"{emoji} {tool_name}: \"{preview}\"",
+                        _human_explanation,
+                    )
                 else:
-                    msg = f"{emoji} {tool_name}..."
+                    msg = _with_tool_progress_explanation(
+                        f"{emoji} {tool_name}...",
+                        _human_explanation,
+                    )
                 progress_queue.put(msg)
                 return
             
@@ -14545,10 +14901,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _cap = _pl if _pl > 0 else 40
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
-                msg = f"{emoji} {tool_name}: \"{preview}\""
+                msg = _with_tool_progress_explanation(
+                    f"{emoji} {tool_name}: \"{preview}\"",
+                    _human_explanation,
+                )
                 last_was_terminal_block[0] = False
             else:
-                msg = f"{emoji} {tool_name}..."
+                msg = _with_tool_progress_explanation(
+                    f"{emoji} {tool_name}...",
+                    _human_explanation,
+                )
                 last_was_terminal_block[0] = False
             
             # Dedup: collapse consecutive identical progress messages.
@@ -14660,7 +15022,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return await adapter.edit_message(**kwargs)
 
             def _progress_text(lines: list) -> str:
-                return "\n".join(str(line) for line in lines)
+                # Keep each technical event and its human explanation together,
+                # but leave a blank line between events so edited Discord
+                # progress bubbles stay readable while they are growing.
+                return "\n\n".join(str(line).rstrip() for line in lines)
 
             def _split_progress_groups(lines: list) -> list[list]:
                 """Partition progress lines into platform-sized editable bubbles."""
@@ -14808,7 +15173,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                     if can_edit and progress_msg_id is not None:
                         # Try to edit the existing progress message
-                        full_text = "\n".join(progress_lines)
+                        full_text = _progress_text(progress_lines)
                         result = await _edit_progress_message(progress_msg_id, full_text)
                         if not result.success:
                             _err = (getattr(result, "error", "") or "").lower()
@@ -14848,7 +15213,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
-                            full_text = "\n".join(progress_lines)
+                            full_text = _progress_text(progress_lines)
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=full_text,
