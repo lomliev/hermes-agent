@@ -94,8 +94,9 @@ _TELEGRAM_NOISY_STATUS_RE = _GATEWAY_NOISY_STATUS_RE
 
 _DISCORD_INTERNAL_RUNTIME_NOTICE_RE = re.compile(
     r"("
-    r"codex\s+(?:runtime|compression|context|responses?)\s+notice"
-    r"|runtime\s+codex\s+(?:compression|context)\s+notice"
+    r"codex(?:\s+gpt-?5(?:\.5)?)?\s+(?:runtime|compression|context|responses?)\s+notice"
+    r"|codex(?:\s+gpt-?5(?:\.5)?)?\s+runtime\s+compression\s+notice"
+    r"|runtime\s+codex(?:\s+gpt-?5(?:\.5)?)?\s+(?:compression|context)\s+notice"
     r"|\[context\s+compaction\s+[—-]\s+reference\s+only\]"
     r")",
     re.IGNORECASE | re.DOTALL,
@@ -429,6 +430,9 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     Telegram) edit the previous bubble for the same status_key instead of
     appending a new one. Adapters without the method fall back to plain send.
     """
+    if _DISCORD_INTERNAL_RUNTIME_NOTICE_RE.search(str(content or "")):
+        return None
+
     sender = getattr(adapter, "send_or_update_status", None)
     if callable(sender):
         return await sender(chat_id, status_key, content, metadata=metadata)
