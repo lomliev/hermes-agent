@@ -92,6 +92,15 @@ _GATEWAY_NOISY_STATUS_RE = re.compile(
 # Backward-compatible alias for tests/imports that used the old Telegram name.
 _TELEGRAM_NOISY_STATUS_RE = _GATEWAY_NOISY_STATUS_RE
 
+_DISCORD_INTERNAL_RUNTIME_NOTICE_RE = re.compile(
+    r"("
+    r"codex\s+(?:runtime|compression|context|responses?)\s+notice"
+    r"|runtime\s+codex\s+(?:compression|context)\s+notice"
+    r"|\[context\s+compaction\s+[—-]\s+reference\s+only\]"
+    r")",
+    re.IGNORECASE | re.DOTALL,
+)
+
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(
     r"("  # infrastructure/provider error preambles, not ordinary assistant prose
     r"api\s+(?:call\s+)?failed"
@@ -383,9 +392,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return None
 
     platform_value = _gateway_platform_value(platform)
-    if platform_value in {"telegram", "discord"}:
+    if platform_value == "telegram":
         text = _redact_gateway_user_facing_secrets(text)
         if _GATEWAY_NOISY_STATUS_RE.search(text):
+            return None
+        if _looks_like_gateway_provider_error(text):
+            return _gateway_provider_error_reply(text)
+    elif platform_value == "discord":
+        text = _redact_gateway_user_facing_secrets(text)
+        if _DISCORD_INTERNAL_RUNTIME_NOTICE_RE.search(text):
             return None
         if _looks_like_gateway_provider_error(text):
             return _gateway_provider_error_reply(text)
