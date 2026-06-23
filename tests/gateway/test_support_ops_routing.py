@@ -81,15 +81,34 @@ def test_alex_ivcho_text_at_mentions_resolve_to_single_backend_mention():
         assert "1504852408227069993" not in result.content
 
 
-def test_alex_ivcho_plain_names_add_exact_backend_mentions_and_normalize_ivo():
-    result = lint_and_resolve_discord_content("Иво/Alex да видят reservation backend грешката")
+def test_backend_plain_alex_ivcho_names_fail_closed_without_text_at_mentions():
+    result = lint_and_resolve_discord_content("Алекс/Ивчо voucher backend казусът е за проверка")
+
+    assert result.ok is False
+    assert result.route is not None
+    assert result.route.lane == "backend_alex_ivcho"
+    assert result.blocked_reason == "blocked_plain_name_route_requires_explicit_text_at_mention"
+    assert BACKEND_MENTION not in result.content
+
+
+def test_backend_plain_ivo_name_fails_closed_without_text_at_mention():
+    result = lint_and_resolve_discord_content("Иво да види reservation backend грешката")
+
+    assert result.ok is False
+    assert result.route is not None
+    assert result.route.lane == "backend_alex_ivcho"
+    assert result.blocked_reason == "blocked_plain_name_route_requires_explicit_text_at_mention"
+    assert BACKEND_MENTION not in result.content
+
+
+def test_backend_text_at_ivo_resolves_to_exact_backend_mentions_and_normalizes_display():
+    result = lint_and_resolve_discord_content("@Иво да види reservation backend грешката")
 
     assert result.ok is True
     assert result.route is not None
     assert result.route.lane == "backend_alex_ivcho"
-    assert result.content.startswith(BACKEND_MENTION)
-    assert "Ивчо" in result.content
-    assert "Иво" not in result.content
+    assert result.content.count(BACKEND_MENTION) == 1
+    assert "@Иво" not in result.content
 
 
 def test_backend_wrong_known_mention_fails_closed():
@@ -107,6 +126,16 @@ def test_fatih_frontend_route_resolves_exact_mention():
     assert result.route.lane == "frontend_fatih"
     assert FATIH_MENTION in result.content
     assert "@Фатих" not in result.content
+
+
+def test_fatih_plain_name_frontend_route_fails_closed_without_text_at_mention():
+    result = lint_and_resolve_discord_content("Фатих frontend FAB бутонът не се показва")
+
+    assert result.ok is False
+    assert result.route is not None
+    assert result.route.lane == "frontend_fatih"
+    assert result.blocked_reason == "blocked_plain_name_route_requires_explicit_text_at_mention"
+    assert FATIH_MENTION not in result.content
 
 
 def test_plamena_display_handle_normalized_in_authored_bulgarian_output():

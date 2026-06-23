@@ -208,7 +208,7 @@ def lint_and_resolve_discord_content(content: str) -> MentionLintResult:
                 flags=re.IGNORECASE,
             )
         elif ALEX_MENTION not in text and IVCHO_MENTION not in text:
-            text = f"{route.mention} {text}"
+            return MentionLintResult(ok=False, content=text, route=route, blocked_reason="blocked_plain_name_route_requires_explicit_text_at_mention")
         # Backend resolver context should use Ивчо as display handle.
         text = re.sub(r"\bИво\b", "Ивчо", text)
 
@@ -218,7 +218,7 @@ def lint_and_resolve_discord_content(content: str) -> MentionLintResult:
         if FATIH_TEXT_MENTION_RE.search(text):
             text = FATIH_TEXT_MENTION_RE.sub(route.mention, text)
         elif FATIH_MENTION not in text:
-            text = f"{route.mention} {text}"
+            return MentionLintResult(ok=False, content=text, route=route, blocked_reason="blocked_plain_name_route_requires_explicit_text_at_mention")
 
     if UNKNOWN_USER_RE.search(text):
         return MentionLintResult(ok=False, content=text, route=route, blocked_reason="blocked_unresolved_unknown_user_placeholder")
