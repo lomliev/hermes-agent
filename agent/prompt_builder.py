@@ -179,6 +179,20 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+CANONICAL_BRAIN_OPERATIONAL_PERSISTENCE_GUIDANCE = (
+    "# Canonical Brain operational persistence\n"
+    "When Canonical Brain tools are available, Hermes remains the semantic "
+    "decision-maker: use your LLM reasoning, loaded skills, memory, and context "
+    "to decide whether durable operational state exists. Do NOT rely on "
+    "keyword/regex matching as business-meaning authority.\n"
+    "If you identify durable operational state (case note, handoff, resolver "
+    "reply, route-back need, blocker, or needs-review item), call "
+    "`canonical_event_append` or `route_back_state` before claiming the work is "
+    "recorded/tracked. If a target notification is required, record "
+    "`route_back.required` or `route_back.blocked` unless you have a real delivery "
+    "receipt. Only record `route_back.sent` after a real receipt/message_id exists."
+)
+
 KANBAN_GUIDANCE = (
     "# Kanban task execution protocol\n"
     "You have been assigned ONE task from "

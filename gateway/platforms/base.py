@@ -490,6 +490,7 @@ from enum import Enum
 from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
+from gateway.active_owner_guard import check_active_owner
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
@@ -3741,6 +3742,19 @@ class BasePlatformAdapter(ABC):
         know to retry rather than waiting indefinitely.
         """
 
+        owner_decision = check_active_owner(self.config)
+        if not owner_decision.allowed:
+            logger.warning(
+                "[%s] Active-owner guard blocked outbound send to %s: %s",
+                self.name,
+                chat_id,
+                owner_decision.log_message(),
+            )
+            return SendResult(
+                success=False,
+                error=f"active-owner guard blocked send: {owner_decision.reason}",
+            )
+
         result = await self.send(
             chat_id=chat_id,
             content=content,
@@ -4249,6 +4263,16 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
+
+        owner_decision = check_active_owner(self.config)
+        if not owner_decision.allowed:
+            logger.warning(
+                "[%s] Active-owner guard blocked inbound message for %s: %s",
+                self.name,
+                session_key,
+                owner_decision.log_message(),
+            )
+            return
 
         # On-entry self-heal: if the adapter still has an _active_sessions
         # entry for this key but the owner task has already exited (done or
