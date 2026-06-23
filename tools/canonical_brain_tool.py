@@ -16,6 +16,11 @@ import pathlib
 import uuid
 from typing import Any, Dict, Optional
 
+try:
+    from hermes_cli.config import load_config
+except Exception:  # pragma: no cover - import-safe for tool discovery
+    load_config = None  # type: ignore[assignment]
+
 from tools.registry import registry, tool_error
 
 CANONICAL_BRAIN_ROOT = pathlib.Path("/opt/adventico-ai-platform/canonical-brain")
@@ -81,6 +86,18 @@ def _contains_secret_like(value: Any) -> bool:
     return any(marker.casefold() in text for marker in SECRET_MARKERS)
 
 
+def _block_secret_like_fields(**fields: Any) -> None:
+    """Fail closed before any Cloud SQL helper/connect on secret-like content.
+
+    Hermes decides operational meaning, but the adapter must mechanically ensure
+    no secret-looking values are written into source/actor/payload/receipt/status
+    surfaces.  Keep this broad and field-oriented rather than business-semantic.
+    """
+    for name, value in fields.items():
+        if _contains_secret_like(value):
+            raise ValueError(f"secret_like_content_blocked:{name}")
+
+
 def _normalize_dict(value: Optional[Dict[str, Any]], name: str) -> Dict[str, Any]:
     if value is None:
         return {}
@@ -101,7 +118,9 @@ def _validate_append_request(
     *,
     event_type: str,
     case_id: str,
+    summary: str,
     source_refs: Dict[str, Any],
+    actors: Dict[str, Any],
     payload: Dict[str, Any],
     safety: Dict[str, Any],
 ) -> None:
@@ -115,8 +134,13 @@ def _validate_append_request(
         raise ValueError("source_refs requires message_id, event_ref, or manual_ref")
     if bool(safety.get("contains_secret")) or bool(safety.get("contains_payment_credential")):
         raise ValueError("safety flags block append")
-    if _contains_secret_like(payload) or _contains_secret_like(source_refs):
-        raise ValueError("secret_like_content_blocked")
+    _block_secret_like_fields(
+        summary=summary,
+        source_refs=source_refs,
+        actors=actors,
+        payload=payload,
+        safety=safety,
+    )
     if event_type in RECEIPT_REQUIRED_EVENT_TYPES:
         receipt = payload.get("receipt") if isinstance(payload, dict) else None
         if not isinstance(receipt, dict) or not receipt.get("message_id"):
@@ -146,7 +170,9 @@ def canonical_event_append_tool(
         _validate_append_request(
             event_type=event_type,
             case_id=case_id,
+            summary=summary,
             source_refs=source_refs,
+            actors=actors,
             payload=payload,
             safety=safety,
         )
@@ -154,36 +180,45 @@ def canonical_event_append_tool(
             idempotency_key = f"{case_id}:{event_type}:{_hash({'source_refs': source_refs, 'payload': payload})[:24]}"
         event_id = _event_uuid(idempotency_key, event_type)
         occurred_at = _utc_now()
+        source = {
+            "system": "hermes_agent",
+            "component": "canonical_brain_tool",
+            "source_refs": source_refs,
+        }
+        actor = actors.get("actor") or {"type": "agent", "id": "hermes"}
+        subject = actors.get("subject") or {"type": "case", "id": case_id}
+        evidence = _normalize_list(payload.get("evidence"), "payload.evidence") if isinstance(payload.get("evidence"), list) else [
+            {"label": "hermes_semantic_decision", "verified": True, "source_refs_hash": _hash(source_refs)[:16]}
+        ]
+        decision = {
+            "kind": "hermes_semantic_operational_persistence",
+            "decided_by": "hermes_agent_llm_reasoning",
+            "keyword_authority": False,
+        }
+        status = {"state": event_type, "summary": str(summary or "")[:500]}
+        next_action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
+        safety_doc = {
+            "secret_value_recorded": False,
+            "payment_credential_recorded": False,
+            "business_mutation": False,
+            "outbound": bool(payload.get("outbound", False)),
+            **safety,
+        }
+        clean_payload = {**payload, "idempotency_key": idempotency_key, "summary": summary}
+        _block_secret_like_fields(
+            summary=summary,
+            source_refs=source_refs,
+            actors=actors,
+            payload=payload,
+            safety=safety,
+            next_action=next_action,
+            clean_payload=clean_payload,
+        )
         helper = _load_helper()
         password = helper.get_secret_value()
         try:
             sock = helper.connect(password)
             try:
-                source = {
-                    "system": "hermes_agent",
-                    "component": "canonical_brain_tool",
-                    "source_refs": source_refs,
-                }
-                actor = actors.get("actor") or {"type": "agent", "id": "hermes"}
-                subject = actors.get("subject") or {"type": "case", "id": case_id}
-                evidence = _normalize_list(payload.get("evidence"), "payload.evidence") if isinstance(payload.get("evidence"), list) else [
-                    {"label": "hermes_semantic_decision", "verified": True, "source_refs_hash": _hash(source_refs)[:16]}
-                ]
-                decision = {
-                    "kind": "hermes_semantic_operational_persistence",
-                    "decided_by": "hermes_agent_llm_reasoning",
-                    "keyword_authority": False,
-                }
-                status = {"state": event_type, "summary": str(summary or "")[:500]}
-                next_action = payload.get("next_action") if isinstance(payload.get("next_action"), dict) else {}
-                safety_doc = {
-                    "secret_value_recorded": False,
-                    "payment_credential_recorded": False,
-                    "business_mutation": False,
-                    "outbound": bool(payload.get("outbound", False)),
-                    **safety,
-                }
-                clean_payload = {**payload, "idempotency_key": idempotency_key, "summary": summary}
                 sql = f"""
 INSERT INTO {EVENT_TABLE} (
   event_id, schema_version, event_type, occurred_at, case_id,
@@ -283,6 +318,14 @@ def route_back_tool(
             event_type = "route_back.intent.created"
         else:
             event_type = "route_back.required"
+        _block_secret_like_fields(
+            target_ref=target_ref,
+            receipt=receipt,
+            blocker_reason=blocker_reason,
+            message_summary=message_summary,
+            next_action=base_payload.get("next_action"),
+            clean_payload=base_payload,
+        )
         return canonical_event_append_tool(
             event_type=event_type,
             case_id=case_id,
@@ -298,13 +341,31 @@ def route_back_tool(
 
 
 def check_canonical_brain_requirements() -> bool:
-    return CLOUD_SQL_HELPER.exists()
+    """Expose Canonical Brain tools only for explicit private/runtime installs.
+
+    This is not an upstream-generic tool surface: it requires the private Cloud
+    SQL helper and an explicit profile config enablement under
+    ``canonical_brain.audit_bridge.enabled`` or ``canonical_brain.tools_enabled``.
+    """
+    if not CLOUD_SQL_HELPER.exists():
+        return False
+    if load_config is None:
+        return False
+    try:
+        cfg = load_config() or {}
+    except Exception:
+        return False
+    cb = cfg.get("canonical_brain") if isinstance(cfg, dict) else None
+    if not isinstance(cb, dict):
+        return False
+    audit = cb.get("audit_bridge")
+    return bool(cb.get("tools_enabled") or (isinstance(audit, dict) and audit.get("enabled")))
 
 
 CANONICAL_EVENT_APPEND_SCHEMA = {
     "name": "canonical_event_append",
     "description": (
-        "Append a durable operational event to Canonical Brain Cloud SQL. "
+        "Append a durable operational event to a private/runtime Canonical Brain Cloud SQL. "
         "Use when Hermes has reasoned that durable state exists (case note, handoff, "
         "route_back.required/blocked, needs_review, resolver reply, etc.). This tool "
         "does NOT decide meaning; Hermes decides. Do not use keyword matching as authority. "
@@ -329,7 +390,7 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
 ROUTE_BACK_SCHEMA = {
     "name": "route_back_state",
     "description": (
-        "Record route-back state in Canonical Brain after Hermes decides a target notification "
+        "Record route-back state in private/runtime Canonical Brain after Hermes decides a target notification "
         "is required, queued, sent, or blocked. This tool does not secretly send messages. "
         "Use record_sent_receipt only after a real delivery result with message_id."
     ),

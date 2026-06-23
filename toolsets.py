@@ -59,7 +59,7 @@ _HERMES_CORE_TOOLS = [
     "execute_code", "delegate_task",
     # Cronjob management
     "cronjob",
-    # Canonical Brain operational persistence (gated on local Cloud SQL helper)
+    # Canonical Brain operational persistence (private/runtime-gated on Cloud SQL helper + profile config)
     "canonical_event_append", "route_back_state",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",

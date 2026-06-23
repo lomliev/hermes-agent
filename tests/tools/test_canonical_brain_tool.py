@@ -29,7 +29,69 @@ def test_canonical_event_append_blocks_keyword_authority_secret_like_payload():
         payload={"note": "token=abc"},
     )
     data = json.loads(out)
-    assert "secret_like_content_blocked" in data["error"]
+    assert "secret_like_content_blocked:payload" in data["error"]
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "blocked_field"),
+    [
+        ({"summary": "token=abc123456789012345"}, "summary"),
+        ({"actors": {"requester": {"note": "password=abc123456789012345"}}}, "actors"),
+        ({"safety": {"operator_note": "secret=abc123456789012345"}}, "safety"),
+    ],
+)
+def test_append_blocks_secret_like_fields_before_helper(monkeypatch, kwargs, blocked_field):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("helper must not be loaded after secret-like input")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+    params = {
+        "event_type": "case.note",
+        "case_id": "case:test",
+        "summary": "safe summary",
+        "source_refs": {"platform": "discord", "message_id": "m1"},
+    }
+    params.update(kwargs)
+
+    out = cbt.canonical_event_append_tool(**params)
+    data = json.loads(out)
+
+    assert f"secret_like_content_blocked:{blocked_field}" in data["error"]
+    assert called["helper"] is False
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "blocked_field"),
+    [
+        ({"message_summary": "token=abc123456789012345"}, "message_summary"),
+        ({"target_ref": {"id": "emil", "note": "secret=abc123456789012345"}}, "target_ref"),
+        ({"mode": "record_sent_receipt", "receipt": {"message_id": "m1", "audit": "password=abc123456789012345"}}, "receipt"),
+    ],
+)
+def test_route_back_blocks_secret_like_fields_before_helper(monkeypatch, kwargs, blocked_field):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("helper must not be loaded after secret-like input")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+    params = {
+        "case_id": "case:test",
+        "target_ref": {"id": "emil"},
+        "message_summary": "safe summary",
+        "source_refs": {"platform": "discord", "message_id": "m1"},
+    }
+    params.update(kwargs)
+
+    out = cbt.route_back_tool(**params)
+    data = json.loads(out)
+
+    assert f"secret_like_content_blocked:{blocked_field}" in data["error"]
+    assert called["helper"] is False
 
 
 def test_event_uuid_is_deterministic_from_idempotency_key():
@@ -86,3 +148,21 @@ def test_append_uses_helper_and_returns_readback(monkeypatch):
     assert data["idempotency_key"] == "idem"
     assert data["inserted"] is True
     assert any("INSERT INTO canonical_event_log" in q for q in fake.queries)
+
+
+def test_check_requirements_false_when_private_helper_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(cbt, "CLOUD_SQL_HELPER", tmp_path / "missing.py")
+
+    assert cbt.check_canonical_brain_requirements() is False
+
+
+def test_check_requirements_requires_explicit_profile_enablement(monkeypatch, tmp_path):
+    helper = tmp_path / "cloud_sql_synthetic_write_gate.py"
+    helper.write_text("# helper")
+    monkeypatch.setattr(cbt, "CLOUD_SQL_HELPER", helper)
+    monkeypatch.setattr(cbt, "load_config", lambda: {"canonical_brain": {"audit_bridge": {"enabled": False}}})
+
+    assert cbt.check_canonical_brain_requirements() is False
+
+    monkeypatch.setattr(cbt, "load_config", lambda: {"canonical_brain": {"tools_enabled": True}})
+    assert cbt.check_canonical_brain_requirements() is True
