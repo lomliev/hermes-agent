@@ -67,6 +67,23 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+class TestCanonicalBrainOperationalPersistenceGuidance:
+    def test_injected_when_canonical_brain_tool_is_available(self):
+        agent = _make_agent(valid_tool_names=["canonical_event_append", "route_back_state"])
+        stable = _stable_prompt(agent)
+
+        assert "Canonical Brain operational persistence" in stable
+        assert "Hermes remains the semantic decision-maker" in stable
+        assert "keyword/regex matching" in stable
+        assert "route_back.sent" in stable
+
+    def test_absent_when_canonical_brain_tools_are_unavailable(self):
+        agent = _make_agent(valid_tool_names=["memory"])
+        stable = _stable_prompt(agent)
+
+        assert "Canonical Brain operational persistence" not in stable
+
+
 class TestCodingContextBlock:
     def test_injected_when_active(self, monkeypatch, tmp_path):
         import subprocess
