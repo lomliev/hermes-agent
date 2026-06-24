@@ -395,6 +395,130 @@ class TestFetchMessages:
 
 
 # ---------------------------------------------------------------------------
+# Action: case_export
+# ---------------------------------------------------------------------------
+
+class TestCaseExport:
+    @patch("tools.discord_tool._discord_request")
+    def test_case_export_uses_thread_target_and_message_anchor(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {
+                "id": "1002",
+                "content": "second",
+                "author": {"id": "43", "username": "user2", "global_name": "User Two", "bot": False},
+                "timestamp": "2024-01-01T12:02:00Z",
+                "edited_timestamp": None,
+                "attachments": [],
+                "mentions": [],
+                "pinned": False,
+            },
+            {
+                "id": "1001",
+                "content": "first",
+                "author": {"id": "42", "username": "user1", "global_name": "User One", "bot": False},
+                "timestamp": "2024-01-01T12:01:00Z",
+                "edited_timestamp": None,
+                "attachments": [],
+                "mentions": [],
+                "pinned": False,
+            },
+        ]
+
+        result = json.loads(discord_core(
+            action="case_export",
+            channel_id="11",
+            thread_id="22",
+            message_id="999",
+            limit=20,
+        ))
+
+        mock_req.assert_called_once_with(
+            "GET",
+            "/channels/22/messages",
+            "test-token",
+            params={"limit": "20", "around": "999"},
+        )
+        assert result["case_export"]["mode"] == "bounded_read_only"
+        assert result["case_export"]["target_channel_id"] == "22"
+        assert result["case_export"]["parent_channel_id"] == "11"
+        assert result["case_export"]["thread_id"] == "22"
+        assert result["case_export"]["anchor_message_id"] == "999"
+        assert [m["id"] for m in result["messages"]] == ["1001", "1002"]
+
+    @patch("tools.discord_tool._discord_request")
+    def test_case_export_redacts_labeled_secrets(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = [
+            {
+                "id": "1001",
+                "content": "api_key=abc123 password: hunter2 Authorization: Bearer abcdefghijklmnop",
+                "author": {"id": "42", "username": "user1", "global_name": "User One", "bot": False},
+                "timestamp": "2024-01-01T12:00:00Z",
+                "edited_timestamp": None,
+                "attachments": [],
+                "mentions": [],
+                "pinned": False,
+            },
+        ]
+
+        result = json.loads(discord_core(action="case_export", channel_id="11"))
+
+        content = result["messages"][0]["content"]
+        assert "abc123" not in content
+        assert "hunter2" not in content
+        assert "abcdefghijklmnop" not in content
+        assert "api_key=<redacted>" in content
+        assert "password=<redacted>" in content
+        assert result["case_export"]["redaction"]["hits"] >= 2
+
+    @patch("tools.discord_tool._discord_request")
+    def test_case_export_requires_channel_or_thread(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(action="case_export"))
+
+        assert "error" in result
+        assert "channel_id or thread_id" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_case_export_rejects_non_numeric_ids(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(action="case_export", channel_id="abc"))
+
+        assert "error" in result
+        assert "numeric Discord snowflake" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_case_export_accepts_only_one_anchor(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+
+        result = json.loads(discord_core(
+            action="case_export",
+            channel_id="11",
+            message_id="999",
+            before="998",
+        ))
+
+        assert "error" in result
+        assert "only one anchor" in result["error"]
+        mock_req.assert_not_called()
+
+    @patch("tools.discord_tool._discord_request")
+    def test_case_export_limit_is_bounded(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.return_value = []
+
+        result = json.loads(discord_core(action="case_export", channel_id="11", limit=500))
+
+        assert result["case_export"]["limit"] == 100
+        assert mock_req.call_args[1]["params"]["limit"] == "100"
+
+
+# ---------------------------------------------------------------------------
 # Action: list_pins
 # ---------------------------------------------------------------------------
 
@@ -558,14 +682,14 @@ class TestRegistration:
         from tools.registry import registry
         entry = registry._tools["discord"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        assert actions == {"fetch_messages", "search_members", "create_thread"}
+        assert actions == {"fetch_messages", "case_export", "search_members", "create_thread"}
 
     def test_admin_schema_actions(self):
         """Admin static schema should list only admin actions."""
         from tools.registry import registry
         entry = registry._tools["discord_admin"]
         actions = set(entry.schema["parameters"]["properties"]["action"]["enum"])
-        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "search_members", "create_thread"}
+        expected_admin = set(_ACTIONS.keys()) - {"fetch_messages", "case_export", "search_members", "create_thread"}
         assert actions == expected_admin
 
     def test_all_actions_covered(self):
@@ -587,6 +711,7 @@ class TestRegistration:
         entry = registry._tools["discord"]
         desc = entry.schema["description"]
         assert "fetch_messages(channel_id)" in desc
+        assert "case_export(channel_id|thread_id, message_id)" in desc
         assert "search_members(guild_id, query)" in desc
         assert "create_thread(channel_id, name)" in desc
         # Admin actions should NOT be in core description
@@ -603,6 +728,7 @@ class TestRegistration:
         assert "delete_message(channel_id, message_id)" in desc
         # Core actions should NOT be in admin description
         assert "fetch_messages(" not in desc
+        assert "case_export(" not in desc
         assert "create_thread(" not in desc
 
     def test_handler_callable(self):
@@ -846,6 +972,7 @@ class TestAvailableActions:
         assert "member_info" not in actions
         # fetch_messages stays — MESSAGE_CONTENT affects content field but action works
         assert "fetch_messages" in actions
+        assert "case_export" in actions
 
     def test_no_message_content_keeps_fetch_messages(self):
         """MESSAGE_CONTENT affects the content field, not the action.
@@ -853,6 +980,7 @@ class TestAvailableActions:
         caps = {"detected": True, "has_members_intent": True, "has_message_content": False}
         actions = _available_actions(caps, None)
         assert "fetch_messages" in actions
+        assert "case_export" in actions
         assert "list_pins" in actions
 
     def test_allowlist_intersects_with_intents(self):

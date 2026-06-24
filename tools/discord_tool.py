@@ -28,6 +28,7 @@ actionable guidance the model can relay to the user.
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -391,6 +392,159 @@ def _fetch_messages(
     return json.dumps({"messages": result, "count": len(result)})
 
 
+_DISCORD_ID_RE = re.compile(r"^\d{1,25}$")
+_SECRET_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(api[_-]?key|token|password|passwd|secret|authorization|credentials?)\b\s*[:=]\s*([^\s,;]+)"
+)
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+([a-z0-9._~+/=-]{12,})")
+
+
+def _valid_discord_id(value: str) -> bool:
+    return bool(value and _DISCORD_ID_RE.fullmatch(str(value).strip()))
+
+
+def _redact_case_text(text: str) -> tuple[str, int]:
+    """Redact obvious labeled secrets without destroying normal case details."""
+    if not text:
+        return "", 0
+
+    hits = 0
+
+    def _replace_bearer(_match: re.Match[str]) -> str:
+        nonlocal hits
+        hits += 1
+        return "Bearer <redacted>"
+
+    redacted = _BEARER_RE.sub(_replace_bearer, text)
+
+    def _replace_assignment(match: re.Match[str]) -> str:
+        nonlocal hits
+        hits += 1
+        return f"{match.group(1)}=<redacted>"
+
+    redacted = _SECRET_ASSIGNMENT_RE.sub(_replace_assignment, redacted)
+    return redacted, hits
+
+
+def _message_to_case_entry(msg: Dict[str, Any]) -> tuple[Dict[str, Any], int]:
+    author = msg.get("author", {})
+    content, redaction_hits = _redact_case_text(str(msg.get("content", "") or ""))
+    entry = {
+        "id": msg.get("id"),
+        "content": content,
+        "author": {
+            "id": author.get("id"),
+            "username": author.get("username"),
+            "display_name": author.get("global_name"),
+            "bot": author.get("bot", False),
+        },
+        "timestamp": msg.get("timestamp"),
+        "edited_timestamp": msg.get("edited_timestamp"),
+        "attachments": [
+            {
+                "filename": a.get("filename"),
+                "url": a.get("url"),
+                "size": a.get("size"),
+                "content_type": a.get("content_type"),
+            }
+            for a in msg.get("attachments", [])
+        ],
+        "mentions": [
+            {
+                "id": m.get("id"),
+                "username": m.get("username"),
+                "display_name": m.get("global_name"),
+                "bot": m.get("bot", False),
+            }
+            for m in msg.get("mentions", [])
+            if isinstance(m, dict)
+        ],
+        "reactions": [
+            {"emoji": r.get("emoji", {}).get("name"), "count": r.get("count", 0)}
+            for r in msg.get("reactions", [])
+        ] if msg.get("reactions") else [],
+        "pinned": msg.get("pinned", False),
+        "message_reference": msg.get("message_reference"),
+    }
+    return entry, redaction_hits
+
+
+def _case_export(
+    token: str,
+    channel_id: str = "",
+    thread_id: str = "",
+    message_id: str = "",
+    limit: int = 50,
+    before: Optional[str] = None,
+    after: Optional[str] = None,
+    **_kwargs: Any,
+) -> str:
+    """Export a bounded read-only Discord case transcript by exact IDs."""
+    target_channel_id = str(thread_id or channel_id or "").strip()
+    parent_channel_id = str(channel_id or "").strip()
+    thread_id = str(thread_id or "").strip()
+    message_id = str(message_id or "").strip()
+    before = str(before or "").strip()
+    after = str(after or "").strip()
+
+    if not target_channel_id:
+        return json.dumps({"error": "case_export requires channel_id or thread_id."})
+    for label, value in (
+        ("channel_id", parent_channel_id),
+        ("thread_id", thread_id),
+        ("message_id", message_id),
+        ("before", before),
+        ("after", after),
+    ):
+        if value and not _valid_discord_id(value):
+            return json.dumps({"error": f"case_export requires numeric Discord snowflake for {label}."})
+
+    anchors = [name for name, value in (("message_id", message_id), ("before", before), ("after", after)) if value]
+    if len(anchors) > 1:
+        return json.dumps({"error": f"case_export accepts only one anchor; got: {', '.join(anchors)}."})
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = max(1, min(limit, 100))
+
+    params: Dict[str, str] = {"limit": str(limit)}
+    if message_id:
+        params["around"] = message_id
+    elif before:
+        params["before"] = before
+    elif after:
+        params["after"] = after
+
+    messages = _discord_request("GET", f"/channels/{target_channel_id}/messages", token, params=params)
+    transcript = []
+    redaction_hits = 0
+    for msg in reversed(messages):
+        entry, hits = _message_to_case_entry(msg)
+        redaction_hits += hits
+        transcript.append(entry)
+
+    return json.dumps({
+        "case_export": {
+            "mode": "bounded_read_only",
+            "target_channel_id": target_channel_id,
+            "parent_channel_id": parent_channel_id or None,
+            "thread_id": thread_id or None,
+            "anchor_message_id": message_id or None,
+            "before": before or None,
+            "after": after or None,
+            "limit": limit,
+            "count": len(transcript),
+            "redaction": {
+                "enabled": True,
+                "hits": redaction_hits,
+            },
+        },
+        "messages": transcript,
+    })
+
+
 def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
     """List pinned messages in a channel."""
     messages = _discord_request("GET", f"/channels/{channel_id}/pins", token)
@@ -479,6 +633,7 @@ _ACTIONS = {
     "member_info": _member_info,
     "search_members": _search_members,
     "fetch_messages": _fetch_messages,
+    "case_export": _case_export,
     "list_pins": _list_pins,
     "pin_message": _pin_message,
     "unpin_message": _unpin_message,
@@ -488,7 +643,7 @@ _ACTIONS = {
     "remove_role": _remove_role,
 }
 
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "case_export", "search_members", "create_thread"})
 _ADMIN_ACTION_NAMES = frozenset(_ACTIONS.keys()) - _CORE_ACTION_NAMES
 
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
@@ -506,6 +661,7 @@ _ACTION_MANIFEST: List[Tuple[str, str, str]] = [
     ("member_info", "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", "(guild_id, query)", "find members by name prefix"),
     ("fetch_messages", "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("case_export", "(channel_id|thread_id, message_id)", "bounded read-only case transcript export"),
     ("list_pins", "(channel_id)", "pinned messages in a channel"),
     ("pin_message", "(channel_id, message_id)", "pin a message"),
     ("unpin_message", "(channel_id, message_id)", "unpin a message"),
@@ -629,7 +785,7 @@ def _build_schema(
     manifest_block = "\n".join(manifest_lines)
 
     content_note = ""
-    affected_actions = {"fetch_messages", "list_pins"} & set(actions)
+    affected_actions = {"fetch_messages", "case_export", "list_pins"} & set(actions)
     if affected_actions and caps.get("detected") and caps.get("has_message_content") is False:
         names = " and ".join(sorted(affected_actions))
         content_note = (
@@ -673,6 +829,10 @@ def _build_schema(
             "type": "string",
             "description": "Discord channel ID.",
         },
+        "thread_id": {
+            "type": "string",
+            "description": "Discord thread ID. For case_export, this is used as the transcript target when provided.",
+        },
         "user_id": {
             "type": "string",
             "description": "Discord user ID.",
@@ -697,7 +857,7 @@ def _build_schema(
             "type": "integer",
             "minimum": 1,
             "maximum": 100,
-            "description": "Max results (default 50). Applies to fetch_messages, search_members.",
+            "description": "Max results (default 50). Applies to fetch_messages, case_export, search_members.",
         },
         "before": {
             "type": "string",
@@ -785,6 +945,9 @@ _ACTION_403_HINT = {
     "fetch_messages": (
         "Bot cannot view this channel (missing VIEW_CHANNEL or READ_MESSAGE_HISTORY)."
     ),
+    "case_export": (
+        "Bot cannot view this channel/thread (missing VIEW_CHANNEL or READ_MESSAGE_HISTORY)."
+    ),
     "list_pins": (
         "Bot cannot view this channel (missing VIEW_CHANNEL or READ_MESSAGE_HISTORY)."
     ),
@@ -830,6 +993,7 @@ def _run_discord_action(
     tool_label: str,
     guild_id: str = "",
     channel_id: str = "",
+    thread_id: str = "",
     user_id: str = "",
     role_id: str = "",
     message_id: str = "",
@@ -867,6 +1031,7 @@ def _run_discord_action(
     local_vars = {
         "guild_id": guild_id,
         "channel_id": channel_id,
+        "thread_id": thread_id,
         "user_id": user_id,
         "role_id": role_id,
         "message_id": message_id,
@@ -885,6 +1050,7 @@ def _run_discord_action(
             token=token,
             guild_id=guild_id,
             channel_id=channel_id,
+            thread_id=thread_id,
             user_id=user_id,
             role_id=role_id,
             message_id=message_id,
@@ -906,7 +1072,7 @@ def _run_discord_action(
 
 
 def discord_core(action: str, **kwargs) -> str:
-    """Execute a core Discord action (fetch_messages, search_members, create_thread)."""
+    """Execute a core Discord action (fetch_messages, case_export, search_members, create_thread)."""
     return _run_discord_action(action, _CORE_ACTIONS, "discord", **kwargs)
 
 
@@ -921,7 +1087,7 @@ def discord_admin_handler(action: str, **kwargs) -> str:
 
 _HANDLER_DEFAULTS = {
     "action": "", "guild_id": "", "channel_id": "", "user_id": "",
-    "role_id": "", "message_id": "", "query": "", "name": "",
+    "thread_id": "", "role_id": "", "message_id": "", "query": "", "name": "",
     "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440,
 }
 
