@@ -16807,6 +16807,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
                 _status_adapter.pause_typing_for_chat(_status_chat_id)
 
+                try:
+                    from gateway.approval_authority import (
+                        format_gateway_approval_authority_block,
+                        gateway_approval_authority_decision,
+                    )
+
+                    _authority = gateway_approval_authority_decision(
+                        self._read_user_config(),
+                        event.source,
+                    )
+                    if _authority.restricted and not _authority.allowed:
+                        _block_msg = format_gateway_approval_authority_block(_authority)
+                        _block_send_fut = safe_schedule_threadsafe(
+                            _status_adapter.send(
+                                _status_chat_id,
+                                _block_msg,
+                                metadata=_status_thread_metadata,
+                            ),
+                            _loop_for_step,
+                            logger=logger,
+                            log_message="approval-authority block-send scheduling error",
+                        )
+                        if _block_send_fut is not None:
+                            _block_send_fut.result(timeout=15)
+                        raise PermissionError(_authority.reason)
+                except PermissionError:
+                    raise
+                except Exception as _authority_exc:
+                    logger.warning(
+                        "Gateway approval authority check failed; falling back "
+                        "to standard approval prompt: %s",
+                        _authority_exc,
+                    )
+
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
 

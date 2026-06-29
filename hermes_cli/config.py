@@ -2367,6 +2367,14 @@ DEFAULT_CONFIG = {
         # false.  TUI has its own modal overlay (HERMES_TUI_NO_CONFIRM=1 to
         # opt out there).
         "destructive_slash_confirm": True,
+        # Optional gateway dangerous-command approval authority allowlist.
+        # Empty lists preserve the upstream/personal-bot behavior: ask for
+        # approval in the conversation that triggered the command. Team bots
+        # can restrict approvals to operators by platform user ID and/or
+        # display name so support reporters are never asked to judge commands.
+        "gateway_authorized_user_ids": [],
+        "gateway_authorized_user_names": [],
+        "gateway_authorized_labels": [],
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
