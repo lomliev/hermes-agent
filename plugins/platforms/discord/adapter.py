@@ -2860,6 +2860,41 @@ class DiscordAdapter(BasePlatformAdapter):
         mixers = getattr(self, "_voice_mixers", None)
         return bool(mixers) and mixers.get(guild_id) is not None
 
+    def _ensure_voice_receiver(self, guild_id: int, vc: Any) -> None:
+        """Ensure the inbound voice receiver/listen loop is active.
+
+        Discord's voice WebSocket can reconnect independently from our adapter
+        bookkeeping.  In that state the bot may still be "connected" from
+        discord.py's point of view while Hermes no longer has a receiver task
+        consuming packets.  Re-joining the same channel should repair that
+        context-listener state instead of returning a dead "already connected"
+        session.
+        """
+        receiver = self._voice_receivers.get(guild_id)
+        listen_task = self._voice_listen_tasks.get(guild_id)
+        receiver_running = bool(receiver and getattr(receiver, "_running", False))
+        task_running = bool(listen_task and not listen_task.done())
+        if receiver_running and task_running:
+            return
+
+        if receiver:
+            try:
+                receiver.stop()
+            except Exception:
+                pass
+        if listen_task and not listen_task.done():
+            listen_task.cancel()
+
+        try:
+            receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
+            receiver.start()
+            self._voice_receivers[guild_id] = receiver
+            self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
+                self._voice_listen_loop(guild_id)
+            )
+        except Exception as e:
+            logger.warning("Voice receiver failed to start: %s", e)
+
     async def join_voice_channel(self, channel) -> bool:
         """Join a Discord voice channel. Returns True on success."""
         if not self._client or not DISCORD_AVAILABLE:
@@ -2868,29 +2903,48 @@ class DiscordAdapter(BasePlatformAdapter):
 
         async with self._voice_locks.setdefault(guild_id, asyncio.Lock()):
             # Already connected in this guild?
-            existing = self._voice_clients.get(guild_id)
+            existing = self._voice_clients.get(guild_id) or getattr(
+                getattr(channel, "guild", None),
+                "voice_client",
+                None,
+            )
             if existing and existing.is_connected():
+                self._voice_clients[guild_id] = existing
                 if existing.channel.id == channel.id:
+                    self._ensure_voice_receiver(guild_id, existing)
                     self._reset_voice_timeout(guild_id)
                     return True
                 await existing.move_to(channel)
+                self._ensure_voice_receiver(guild_id, existing)
                 self._reset_voice_timeout(guild_id)
                 return True
+            if existing:
+                self._voice_clients.pop(guild_id, None)
 
-            vc = await channel.connect()
+            try:
+                vc = await channel.connect()
+            except Exception as e:
+                # discord.py can retain a guild.voice_client even when our
+                # adapter-side _voice_clients map was cleared by a reconnect
+                # edge.  Treat "already connected" as a recoverable state and
+                # rebuild Hermes' receiver/listen bookkeeping around the live
+                # VoiceClient.
+                if "already connected" not in str(e).lower():
+                    raise
+                existing = getattr(getattr(channel, "guild", None), "voice_client", None)
+                if not existing or not existing.is_connected():
+                    raise
+                self._voice_clients[guild_id] = existing
+                if getattr(getattr(existing, "channel", None), "id", None) != channel.id:
+                    await existing.move_to(channel)
+                self._ensure_voice_receiver(guild_id, existing)
+                self._reset_voice_timeout(guild_id)
+                return True
             self._voice_clients[guild_id] = vc
             self._reset_voice_timeout(guild_id)
 
             # Start voice receiver (Phase 2: listen to users)
-            try:
-                receiver = VoiceReceiver(vc, allowed_user_ids=self._allowed_user_ids)
-                receiver.start()
-                self._voice_receivers[guild_id] = receiver
-                self._voice_listen_tasks[guild_id] = asyncio.ensure_future(
-                    self._voice_listen_loop(guild_id)
-                )
-            except Exception as e:
-                logger.warning("Voice receiver failed to start: %s", e)
+            self._ensure_voice_receiver(guild_id, vc)
 
             # Phase 3: install the continuous mixer (ambient bed + ducked
             # speech).  Best-effort — if it fails we fall back to the legacy
