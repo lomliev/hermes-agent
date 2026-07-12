@@ -1297,6 +1297,8 @@ class TestDiscordVoiceChannelMethods:
         adapter._voice_input_callback = None
         adapter._allowed_user_ids = set()
         adapter._running = True
+        adapter._voice_fx_cfg = {}
+        adapter._voice_mixers = {}
         return adapter
 
     def test_is_in_voice_channel_true(self):
@@ -1316,6 +1318,64 @@ class TestDiscordVoiceChannelMethods:
         mock_vc.is_connected.return_value = False
         adapter._voice_clients[111] = mock_vc
         assert adapter.is_in_voice_channel(111) is False
+
+    @pytest.mark.asyncio
+    async def test_join_voice_channel_repairs_existing_receiver_state(self):
+        """Rejoining the same connected channel restarts a stale receiver."""
+        adapter = self._make_adapter()
+        mock_channel = MagicMock()
+        mock_channel.id = 222
+        mock_channel.guild.id = 111
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.channel.id = 222
+        adapter._voice_clients[111] = mock_vc
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._voice_listen_loop = MagicMock(return_value=object())
+        stale_task = MagicMock()
+        stale_task.done.return_value = True
+        adapter._voice_listen_tasks[111] = stale_task
+
+        mock_receiver = MagicMock()
+        mock_task = MagicMock()
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver", return_value=mock_receiver), \
+             patch("plugins.platforms.discord.adapter.asyncio.ensure_future", return_value=mock_task):
+            result = await adapter.join_voice_channel(mock_channel)
+
+        assert result is True
+        mock_channel.connect.assert_not_called()
+        mock_receiver.start.assert_called_once()
+        assert adapter._voice_receivers[111] is mock_receiver
+        assert adapter._voice_listen_tasks[111] is mock_task
+
+    @pytest.mark.asyncio
+    async def test_join_voice_channel_recovers_discord_already_connected(self):
+        """discord.py's already-connected state is adopted and repaired."""
+        adapter = self._make_adapter()
+        mock_channel = MagicMock()
+        mock_channel.id = 222
+        mock_channel.guild.id = 111
+        mock_channel.connect = AsyncMock(side_effect=Exception("Already connected to a voice channel."))
+
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.channel.id = 222
+        mock_channel.guild.voice_client = mock_vc
+        adapter._reset_voice_timeout = MagicMock()
+        adapter._voice_listen_loop = MagicMock(return_value=object())
+
+        mock_receiver = MagicMock()
+        mock_task = MagicMock()
+        with patch("plugins.platforms.discord.adapter.VoiceReceiver", return_value=mock_receiver), \
+             patch("plugins.platforms.discord.adapter.asyncio.ensure_future", return_value=mock_task):
+            result = await adapter.join_voice_channel(mock_channel)
+
+        assert result is True
+        assert adapter._voice_clients[111] is mock_vc
+        mock_receiver.start.assert_called_once()
+        assert adapter._voice_receivers[111] is mock_receiver
+        assert adapter._voice_listen_tasks[111] is mock_task
 
     @pytest.mark.asyncio
     async def test_leave_voice_channel_cleans_up(self):
