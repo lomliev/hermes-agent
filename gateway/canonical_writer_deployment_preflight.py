@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pure deployment preflight for the privileged Canonical Brain writer.
+"""Pure diagnostic preflight for the privileged Canonical Brain writer.
 
 The command consumes an already-collected JSON snapshot.  It never invokes
 systemd, IAM, Secret Manager, Cloud SQL, or the network, so collection and
@@ -9,6 +9,7 @@ mutation authority remain outside this checker.
 from __future__ import annotations
 
 import argparse
+import ipaddress
 import json
 import re
 import stat
@@ -29,6 +30,7 @@ from gateway.canonical_writer_db import (
     TablePrivilegeGrant,
     WriterPrivilegePolicy,
     managed_cloudsqladmin_hba_receipt_from_mapping,
+    validate_tls_server_name,
     validate_privilege_attestation,
 )
 from gateway.canonical_writer_postgres_backend import (
@@ -39,6 +41,8 @@ from gateway.canonical_writer_postgres_backend import (
     EXPECTED_ROUTINE_SIGNATURES,
 )
 from gateway.canonical_writer_boundary import (
+    DEFAULT_DISCORD_EDGE_SOCKET_PATH,
+    DEFAULT_DISCORD_EDGE_UNIT,
     DEFAULT_GATEWAY_UNIT,
     DEFAULT_SOCKET_PATH,
     DEFAULT_WRITER_UNIT,
@@ -63,9 +67,10 @@ _HARDENED_TRUE_PROPERTIES = (
 _FORBIDDEN_IAM_MARKERS = ("cloudsql", "secretmanager")
 _FORBIDDEN_BROAD_ROLES = {"roles/owner", "roles/editor"}
 _MAX_GATEWAY_PROCESS_EVIDENCE_AGE_SECONDS = 30
+_MAX_ACTIVE_HBA_EVIDENCE_AGE_SECONDS = 30
 _TRUSTED_SECRET_PROVISIONERS = {"root", "systemd"}
-_WRITER_BOOTSTRAP_MODULE = "scripts.canonical_writer_bootstrap"
-_GATEWAY_ENTRY_MODULE = "gateway.run"
+_WRITER_BOOTSTRAP_MODULE = "gateway.canonical_writer_bootstrap"
+_GATEWAY_ENTRY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
 _WRITER_EXPORT_UNIT = "muncho-canonical-writer-export.service"
 _WRITER_EXPORT_TIMER = "muncho-canonical-writer-export.timer"
 _REQUIRED_IMPORT_KINDS = {
@@ -103,10 +108,30 @@ _ALLOWED_TIMER_SCHEDULE_KEYS = {
     "Persistent",
     "RandomizedDelayUSec",
 }
-_GATEWAY_ALLOWED_READ_WRITE_PATHS = {
-    "/run/hermes-cloud-gateway",
-    "/var/lib/hermes-gateway",
-    "/var/log/hermes-gateway",
+_GATEWAY_REQUIRED_READ_WRITE_PATHS = ("/run/hermes-cloud-gateway",)
+_WRITER_ONLY_DEPLOYMENT_MODE = "writer_only"
+_DISCORD_EDGE_CONFIG_PATH = "/etc/muncho/discord-edge.json"
+_DISCORD_EDGE_TOKEN_PATH = (
+    "/etc/muncho/discord-edge-credentials/bot-token"
+)
+_WRITER_ONLY_DISCORD_EDGE_KEYS = {
+    "complete",
+    "collected_by_uid",
+    "observed_at_unix",
+    "gateway_enabled",
+    "writer_authority_enabled",
+    "unit_name",
+    "unit_exists",
+    "unit_enabled",
+    "unit_active",
+    "main_pid",
+    "config_path",
+    "config_exists",
+    "token_path",
+    "token_exists",
+    "socket_path",
+    "socket_exists",
+    "process_pids",
 }
 
 
@@ -222,6 +247,39 @@ def _sha256(value: Any) -> str | None:
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         return None
     return value
+
+
+def _external_native_mapping_policy(
+    value: Any,
+    *,
+    artifact_root: str | None,
+) -> tuple[tuple[str, str], ...]:
+    """Return one exact canonical external-native mapping allow-list.
+
+    The activation plan emits a non-empty, path-sorted JSON list.  Packaged
+    preflight must validate the same shape before it may use the paths as an
+    exception to the otherwise release-contained executable-map invariant.
+    """
+
+    if artifact_root is None or type(value) is not list or not value:
+        raise ValueError("external native mapping policy is absent")
+    result: list[tuple[str, str]] = []
+    for raw in value:
+        item = _mapping(raw)
+        path = _absolute_normalized_path(item.get("path"))
+        digest = _sha256(item.get("sha256"))
+        if (
+            set(item) != {"path", "sha256"}
+            or path is None
+            or _path_is_within(path, artifact_root)
+            or digest is None
+        ):
+            raise ValueError("external native mapping policy is invalid")
+        result.append((path, digest))
+    paths = [path for path, _digest in result]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise ValueError("external native mapping policy is not canonical")
+    return tuple(result)
 
 
 def _revision(value: Any) -> str | None:
@@ -343,6 +401,8 @@ _WRITER_DEPLOYMENT_POLICY_KEYS = {
     "module",
     "module_origin",
     "projection_export_directory",
+    "preapproved_external_native_executable_mappings",
+    "preapproved_kernel_executable_mappings",
     "read_write_paths",
     "revision",
     "runtime_directory",
@@ -393,6 +453,7 @@ _WRITER_PROCESS_ATTESTATION_KEYS = {
     "loaded_module_origins_complete",
     "mapped_executable_paths",
     "mapped_executable_paths_complete",
+    "kernel_executable_mappings",
     "observed_at_unix",
     "pid",
     "process_start_time_ticks",
@@ -466,6 +527,23 @@ def _writer_deployment_checks(
         read_write_paths = _strings(policy.get("read_write_paths"))
         bind_paths = _strings(policy.get("bind_paths"))
         bind_read_only_paths = _strings(policy.get("bind_read_only_paths"))
+        approved_native_mappings = _external_native_mapping_policy(
+            policy.get("preapproved_external_native_executable_mappings"),
+            artifact_root=artifact_root,
+        )
+        approved_native_paths = tuple(
+            path for path, _digest in approved_native_mappings
+        )
+        approved_kernel_mappings = _strings(
+            policy.get("preapproved_kernel_executable_mappings")
+        )
+        if (
+            not approved_kernel_mappings
+            or approved_kernel_mappings
+            != tuple(sorted(set(approved_kernel_mappings)))
+            or not set(approved_kernel_mappings) <= {"[vdso]", "[vsyscall]"}
+        ):
+            raise ValueError("kernel executable mapping policy is invalid")
 
         raw_import_paths = policy.get("import_paths")
         if not isinstance(raw_import_paths, Sequence) or isinstance(
@@ -493,6 +571,7 @@ def _writer_deployment_checks(
 
         expected_exec = (
             interpreter or "",
+            "-B",
             "-I",
             "-m",
             _WRITER_BOOTSTRAP_MODULE,
@@ -674,6 +753,9 @@ def _writer_deployment_checks(
         effective_import_paths = _strings(process.get("effective_import_paths"))
         loaded_module_origins = _strings(process.get("loaded_module_origins"))
         mapped_executable_paths = _strings(process.get("mapped_executable_paths"))
+        observed_kernel_mappings = _strings(
+            process.get("kernel_executable_mappings")
+        )
         expected_import_paths = tuple(
             sorted(
                 path
@@ -693,6 +775,13 @@ def _writer_deployment_checks(
                 for protected_path, expected in import_policy.items()
             )
 
+        observed_external_native_paths = tuple(
+            sorted(
+                path
+                for path in mapped_executable_paths
+                if not covered_by_immutable_closure(path)
+            )
+        )
         process_code_closure = (
             process_shape_ok
             and effective_import_paths == expected_import_paths
@@ -707,8 +796,12 @@ def _writer_deployment_checks(
             and interpreter in mapped_executable_paths
             and len(set(mapped_executable_paths)) == len(mapped_executable_paths)
             and all(
-                covered_by_immutable_closure(path) for path in mapped_executable_paths
+                covered_by_immutable_closure(path)
+                or path in approved_native_paths
+                for path in mapped_executable_paths
             )
+            and observed_external_native_paths == approved_native_paths
+            and observed_kernel_mappings == approved_kernel_mappings
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
             and _empty_sequence(process.get("writable_code_mappings"))
@@ -763,7 +856,7 @@ def _writer_deployment_checks(
         PreflightCheck(
             "writer_deployment.unit_exact",
             policy_valid and unit_exact,
-            "writer unit must use the exact UID/GID, interpreter, -I module invocation, revision, digest, and config with no alternate commands or code-injection environment",
+            "writer unit must use the exact UID/GID, interpreter, -B -I module invocation, revision, digest, and config with no alternate commands or code-injection environment",
         ),
         PreflightCheck(
             "writer_deployment.artifact_exact",
@@ -830,6 +923,8 @@ _GATEWAY_DEPLOYMENT_POLICY_KEYS = {
     "interpreter",
     "module",
     "module_origin",
+    "preapproved_external_native_executable_mappings",
+    "preapproved_kernel_executable_mappings",
     "read_write_paths",
     "revision",
     "unit_name",
@@ -876,6 +971,7 @@ _GATEWAY_PROCESS_ATTESTATION_KEYS = {
     "loaded_module_origins_complete",
     "mapped_executable_paths",
     "mapped_executable_paths_complete",
+    "kernel_executable_mappings",
     "observed_at_unix",
     "pid",
     "process_start_time_ticks",
@@ -929,6 +1025,23 @@ def _gateway_deployment_checks(
         read_write_paths = _strings(policy.get("read_write_paths"))
         bind_paths = _strings(policy.get("bind_paths"))
         bind_read_only_paths = _strings(policy.get("bind_read_only_paths"))
+        approved_native_mappings = _external_native_mapping_policy(
+            policy.get("preapproved_external_native_executable_mappings"),
+            artifact_root=artifact_root,
+        )
+        approved_native_paths = tuple(
+            path for path, _digest in approved_native_mappings
+        )
+        approved_kernel_mappings = _strings(
+            policy.get("preapproved_kernel_executable_mappings")
+        )
+        if (
+            not approved_kernel_mappings
+            or approved_kernel_mappings
+            != tuple(sorted(set(approved_kernel_mappings)))
+            or not set(approved_kernel_mappings) <= {"[vdso]", "[vsyscall]"}
+        ):
+            raise ValueError("kernel executable mapping policy is invalid")
         dynamic_loading_mode = str(
             policy.get("dynamic_python_loading_mode") or ""
         )
@@ -970,13 +1083,15 @@ def _gateway_deployment_checks(
             Path(module_origin) == Path(root) / expected_module_relative
             for root in site_package_roots
         )
-        writable_paths_safe = all(
-            _absolute_normalized_path(path) == path
-            and path in _GATEWAY_ALLOWED_READ_WRITE_PATHS
-            and artifact_root is not None
-            and not _path_is_within(path, artifact_root)
-            and not _path_is_within(artifact_root, path)
-            for path in read_write_paths
+        writable_paths_safe = (
+            read_write_paths == _GATEWAY_REQUIRED_READ_WRITE_PATHS
+            and all(
+                _absolute_normalized_path(path) == path
+                and artifact_root is not None
+                and not _path_is_within(path, artifact_root)
+                and not _path_is_within(artifact_root, path)
+                for path in read_write_paths
+            )
         )
         dynamic_paths_safe = (
             dynamic_loading_mode in {"disabled", "immutable_only"}
@@ -1011,7 +1126,13 @@ def _gateway_deployment_checks(
             and module_origin_exact
             and working_directory == artifact_root
             and exec_start
-            == (interpreter, "-I", "-m", _GATEWAY_ENTRY_MODULE)
+            == (
+                interpreter,
+                "-B",
+                "-I",
+                "-m",
+                _GATEWAY_ENTRY_MODULE,
+            )
             and import_shape_ok
             and interpreter_policy is not None
             and interpreter_policy[0] == "interpreter"
@@ -1096,6 +1217,9 @@ def _gateway_deployment_checks(
         )
         loaded_origins = _strings(process.get("loaded_module_origins"))
         mapped_paths = _strings(process.get("mapped_executable_paths"))
+        observed_kernel_mappings = _strings(
+            process.get("kernel_executable_mappings")
+        )
         observed_dynamic_paths = _strings(
             process.get("dynamic_python_discovery_paths")
         )
@@ -1121,6 +1245,13 @@ def _gateway_deployment_checks(
                 for protected_path, expected in import_policy.items()
             )
 
+        observed_external_native_paths = tuple(
+            sorted(
+                path
+                for path in mapped_paths
+                if not covered_by_shared_release(path)
+            )
+        )
         process_code_closure = (
             process_shape_ok
             and effective_import_paths == expected_import_paths
@@ -1131,7 +1262,13 @@ def _gateway_deployment_checks(
             and process.get("mapped_executable_paths_complete") is True
             and interpreter in mapped_paths
             and len(set(mapped_paths)) == len(mapped_paths)
-            and all(covered_by_shared_release(path) for path in mapped_paths)
+            and all(
+                covered_by_shared_release(path)
+                or path in approved_native_paths
+                for path in mapped_paths
+            )
+            and observed_external_native_paths == approved_native_paths
+            and observed_kernel_mappings == approved_kernel_mappings
             and _empty_sequence(process.get("unexpected_import_origins"))
             and _empty_sequence(process.get("deleted_code_mappings"))
             and _empty_sequence(process.get("writable_code_mappings"))
@@ -1218,9 +1355,13 @@ def _gateway_deployment_checks(
 
 
 _AUTHORITY_IDENTITY_KEYS = {
+    "effective_capabilities",
     "effective_gid",
     "effective_uid",
+    "executable",
+    "no_new_privileges",
     "pid",
+    "process_start_time_ticks",
     "supplementary_gids",
 }
 _AUTHORITY_CHILDREN_KEYS = {"complete", "processes"}
@@ -1232,6 +1373,10 @@ _GROUP_POLICY_KEYS = {
     "gateway_dangerous_memberships",
     "unknown_privileged_gids",
     "writer_dangerous_memberships",
+    "gateway_account_gids",
+    "writer_account_gids",
+    "protected_group_memberships",
+    "projector_identity",
 }
 _AUTHORITY_DENIAL_KEYS = {
     "authorized_doas_commands",
@@ -1247,6 +1392,8 @@ _AUTHORITY_DENIAL_KEYS = {
     "can_write_cron_paths",
     "can_write_systemd_unit_paths",
     "effective_capabilities",
+    "writable_cron_paths",
+    "writable_systemd_unit_paths",
 }
 _PRIVILEGED_INVENTORY_KEYS = {
     "complete",
@@ -1259,6 +1406,35 @@ _PRIVILEGED_INVENTORY_KEYS = {
     "writer_uid_timer_units",
     "writer_uid_transient_units",
     "writer_uid_unattributed_processes",
+    "writer_unit_reverse_activation",
+    "gateway_uid_service_units",
+    "gateway_uid_timer_units",
+    "gateway_uid_transient_units",
+    "gateway_uid_cron_entries",
+    "gateway_uid_at_jobs",
+    "gateway_uid_process_executables",
+    "gateway_uid_unattributed_processes",
+    "gateway_unit_reverse_activation",
+}
+_REVERSE_ACTIVATION_EVIDENCE_KEYS = {
+    "unit_name",
+    "triggered_by",
+    "wanted_by",
+    "required_by",
+    "bound_by",
+    "upheld_by",
+    "requisite_of",
+    "on_success_of",
+    "on_failure_of",
+    "reverse_references",
+    "service_units",
+    "timer_units",
+    "socket_units",
+    "path_units",
+    "target_units",
+    "automount_units",
+    "other_units",
+    "transient_units",
 }
 _EXPORTER_POLICY_KEYS = {
     "artifact_digest_sha256",
@@ -1309,7 +1485,163 @@ _AUTHORITY_SURFACE_KEYS = {
     "observed_at_unix",
     "privileged_execution_inventory",
     "projection_exporter",
+    "writer_authority",
+    "user_systemd",
 }
+_USER_SYSTEMD_PRINCIPAL_KEYS = {
+    "uid",
+    "linger_path",
+    "linger_enabled",
+    "user_manager_unit",
+    "load_state",
+    "active_state",
+    "sub_state",
+    "main_pid",
+    "runtime_directory_exists",
+    "private_socket_exists",
+    "home_user_unit_path",
+    "home_user_unit_path_exists",
+    "home_user_unit_path_service_writable",
+    "home_directory_exists",
+    "evaluated_home_user_unit_paths",
+    "existing_home_user_unit_paths",
+    "service_writable_home_user_unit_paths",
+    "service_units",
+    "timer_units",
+    "activation_units",
+    "transient_units",
+    "runtime_service_units",
+    "runtime_timer_units",
+    "runtime_activation_units",
+    "global_service_units",
+    "global_timer_units",
+    "global_activation_units",
+    "global_generators",
+    "evaluated_global_unit_roots",
+    "existing_global_unit_roots",
+    "evaluated_global_generator_roots",
+    "existing_global_generator_roots",
+    "global_directories_protected",
+}
+
+_GLOBAL_USER_SYSTEMD_UNIT_ROOTS = (
+    "/etc/systemd/user",
+    "/usr/lib/systemd/user",
+    "/etc/xdg/systemd/user",
+    "/usr/local/lib/systemd/user",
+    "/usr/local/share/systemd/user",
+    "/usr/share/systemd/user",
+    "/run/systemd/user",
+)
+_GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS = (
+    "/etc/systemd/user-generators",
+    "/etc/xdg/systemd/user-generators",
+    "/usr/local/lib/systemd/user-generators",
+    "/usr/lib/systemd/user-generators",
+    "/run/systemd/user-generators",
+    "/etc/systemd/user-environment-generators",
+    "/usr/local/lib/systemd/user-environment-generators",
+    "/usr/lib/systemd/user-environment-generators",
+    "/run/systemd/user-environment-generators",
+)
+
+
+def _user_systemd_is_absent(
+    value: Any, *, uid: int, user_name: str
+) -> bool:
+    evidence = _mapping(value)
+    home = (
+        "/var/lib/hermes-gateway"
+        if user_name == "muncho-gateway"
+        else "/nonexistent"
+    )
+    expected_home_paths = (
+        f"{home}/.config/systemd/user",
+        f"{home}/.local/share/systemd/user",
+        f"{home}/.config/systemd/user-generators",
+        f"{home}/.local/share/systemd/user-generators",
+        f"{home}/.config/systemd/user-environment-generators",
+        f"{home}/.local/share/systemd/user-environment-generators",
+    )
+    existing_global_roots = evidence.get("existing_global_unit_roots")
+    existing_generator_roots = evidence.get("existing_global_generator_roots")
+    return (
+        set(evidence) == _USER_SYSTEMD_PRINCIPAL_KEYS
+        and evidence.get("uid") == uid
+        and evidence.get("linger_path")
+        == f"/var/lib/systemd/linger/{user_name}"
+        and evidence.get("linger_enabled") is False
+        and evidence.get("user_manager_unit") == f"user@{uid}.service"
+        and evidence.get("load_state") == "loaded"
+        and evidence.get("active_state") == "inactive"
+        and evidence.get("sub_state") == "dead"
+        and evidence.get("main_pid") == 0
+        and evidence.get("runtime_directory_exists") is False
+        and evidence.get("private_socket_exists") is False
+        and evidence.get("home_user_unit_path") == expected_home_paths[0]
+        and evidence.get("home_user_unit_path_exists") is False
+        and evidence.get("home_user_unit_path_service_writable") is False
+        and evidence.get("home_directory_exists")
+        is (user_name == "muncho-gateway")
+        and tuple(evidence.get("evaluated_home_user_unit_paths") or ())
+        == expected_home_paths
+        and _empty_sequence(evidence.get("existing_home_user_unit_paths"))
+        and _empty_sequence(
+            evidence.get("service_writable_home_user_unit_paths")
+        )
+        and _empty_sequence(evidence.get("service_units"))
+        and _empty_sequence(evidence.get("timer_units"))
+        and _empty_sequence(evidence.get("activation_units"))
+        and _empty_sequence(evidence.get("transient_units"))
+        and _empty_sequence(evidence.get("runtime_service_units"))
+        and _empty_sequence(evidence.get("runtime_timer_units"))
+        and _empty_sequence(evidence.get("runtime_activation_units"))
+        and evidence.get("global_directories_protected") is True
+        and _canonical_string_sequence(evidence.get("global_service_units"))
+        and _canonical_string_sequence(evidence.get("global_timer_units"))
+        and _canonical_string_sequence(evidence.get("global_activation_units"))
+        and _canonical_string_sequence(evidence.get("global_generators"))
+        and tuple(evidence.get("evaluated_global_unit_roots") or ())
+        == _GLOBAL_USER_SYSTEMD_UNIT_ROOTS
+        and _canonical_string_sequence(existing_global_roots)
+        and set(existing_global_roots).issubset(_GLOBAL_USER_SYSTEMD_UNIT_ROOTS)
+        and {"/etc/systemd/user", "/usr/lib/systemd/user"}.issubset(
+            existing_global_roots
+        )
+        and tuple(evidence.get("evaluated_global_generator_roots") or ())
+        == _GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS
+        and _canonical_string_sequence(existing_generator_roots)
+        and set(existing_generator_roots).issubset(
+            _GLOBAL_USER_SYSTEMD_GENERATOR_ROOTS
+        )
+    )
+
+
+def _reverse_activation_is_absent(value: Any, *, unit_name: str) -> bool:
+    evidence = _mapping(value)
+    expected_gateway_edge = (
+        [DEFAULT_GATEWAY_UNIT] if unit_name == DEFAULT_WRITER_UNIT else []
+    )
+    return (
+        set(evidence) == _REVERSE_ACTIVATION_EVIDENCE_KEYS
+        and evidence.get("unit_name") == unit_name
+        and evidence.get("bound_by") == expected_gateway_edge
+        and evidence.get("reverse_references") == expected_gateway_edge
+        and evidence.get("service_units") == expected_gateway_edge
+        and all(
+            _empty_sequence(evidence.get(name))
+            for name in _REVERSE_ACTIVATION_EVIDENCE_KEYS
+            - {"unit_name", "bound_by", "reverse_references", "service_units"}
+        )
+    )
+
+
+def _canonical_string_sequence(value: Any) -> bool:
+    if not isinstance(value, list) or any(
+        not isinstance(item, str) or not item for item in value
+    ):
+        return False
+    return value == sorted(set(value))
 
 
 def _strict_integers(value: Any) -> tuple[int, ...]:
@@ -1326,6 +1658,8 @@ def _authority_identity(
     value: Any,
     *,
     expected_pid: int,
+    expected_start_time_ticks: int,
+    expected_executable: str,
     expected_uid: int,
     expected_gid: int,
     expected_supplementary_gids: tuple[int, ...],
@@ -1339,11 +1673,18 @@ def _authority_identity(
         set(identity) == _AUTHORITY_IDENTITY_KEYS
         and type(identity.get("pid")) is int
         and identity.get("pid") == expected_pid
+        and type(identity.get("process_start_time_ticks")) is int
+        and identity.get("process_start_time_ticks") > 0
+        and identity.get("process_start_time_ticks")
+        == expected_start_time_ticks
         and type(identity.get("effective_uid")) is int
         and identity.get("effective_uid") == expected_uid
         and type(identity.get("effective_gid")) is int
         and identity.get("effective_gid") == expected_gid
         and supplementary == expected_supplementary_gids
+        and identity.get("no_new_privileges") is True
+        and identity.get("effective_capabilities") == []
+        and identity.get("executable") == expected_executable
     )
 
 
@@ -1436,6 +1777,7 @@ def _writer_authority_surface_checks(
     )
     writer_process = _mapping(writer_attestation.get("process"))
     gateway_process = _mapping(gateway_process_snapshot)
+    user_systemd = _mapping(surface.get("user_systemd"))
     shape_ok = (
         set(surface) == _AUTHORITY_SURFACE_KEYS
         and set(identities) == _AUTHORITY_IDENTITIES_KEYS
@@ -1444,6 +1786,7 @@ def _writer_authority_surface_checks(
         and set(exporter) == {"attestation", "policy"}
         and set(exporter_policy) == _EXPORTER_POLICY_KEYS
         and set(exporter_attestation) == _EXPORTER_ATTESTATION_KEYS
+        and set(user_systemd) == {"complete", "gateway", "writer"}
     )
     observed_at = _integer(surface.get("observed_at_unix"))
     fresh_root_evidence = (
@@ -1463,6 +1806,7 @@ def _writer_authority_surface_checks(
     exporter_manifest_exact = False
     exporter_state_safe = False
     inventory_exact = False
+    user_systemd_safe = False
     try:
         gateway_identity = identities.get("gateway")
         writer_identity = identities.get("writer")
@@ -1492,9 +1836,15 @@ def _writer_authority_surface_checks(
                 and _authority_identity(
                     child,
                     expected_pid=child_pid,
+                    expected_start_time_ticks=_integer(
+                        child.get("process_start_time_ticks")
+                    ),
+                    expected_executable=str(child.get("executable") or ""),
                     expected_uid=gateway_uid,
                     expected_gid=gateway_gid,
-                    expected_supplementary_gids=(socket_group_gid,),
+                    expected_supplementary_gids=tuple(
+                        sorted((gateway_gid, socket_group_gid))
+                    ),
                 )
             )
             if type(child_pid) is int:
@@ -1510,16 +1860,28 @@ def _writer_authority_surface_checks(
             and _authority_identity(
                 gateway_identity,
                 expected_pid=_integer(gateway_process.get("pid")),
+                expected_start_time_ticks=_integer(
+                    gateway_process.get("process_start_time_ticks")
+                ),
+                expected_executable=str(writer_policy.get("interpreter") or ""),
                 expected_uid=gateway_uid,
                 expected_gid=gateway_gid,
-                expected_supplementary_gids=(socket_group_gid,),
+                expected_supplementary_gids=tuple(
+                    sorted((gateway_gid, socket_group_gid))
+                ),
             )
             and _authority_identity(
                 writer_identity,
                 expected_pid=_integer(writer_process.get("pid")),
+                expected_start_time_ticks=_integer(
+                    writer_process.get("process_start_time_ticks")
+                ),
+                expected_executable=str(writer_policy.get("interpreter") or ""),
                 expected_uid=writer_uid,
                 expected_gid=writer_gid,
-                expected_supplementary_gids=(projector_gid,),
+                expected_supplementary_gids=tuple(
+                    sorted((writer_gid, projector_gid))
+                ),
             )
             and children_exact
         )
@@ -1543,6 +1905,29 @@ def _writer_authority_surface_checks(
                 group_policy.get("writer_dangerous_memberships")
             )
             and not unknown_gids
+            and _strict_integers(group_policy.get("gateway_account_gids"))
+            == tuple(sorted((gateway_gid, socket_group_gid)))
+            and _strict_integers(group_policy.get("writer_account_gids"))
+            == tuple(sorted((writer_gid, projector_gid)))
+            and group_policy.get("protected_group_memberships")
+            == {
+                str(gateway_gid): ["muncho-gateway"],
+                str(writer_gid): ["muncho-canonical-writer"],
+                str(socket_group_gid): ["muncho-gateway"],
+                str(projector_gid): [
+                    "muncho-canonical-writer",
+                    "muncho-projector",
+                ],
+            }
+            and group_policy.get("projector_identity")
+            == {
+                "uid": 992,
+                "gid": projector_gid,
+                "home": "/nonexistent",
+                "shell": "/usr/sbin/nologin",
+                "gids": [projector_gid],
+                "process_pids": [],
+            }
         )
 
         enabled = exporter_policy.get("enabled")
@@ -1577,6 +1962,7 @@ def _writer_authority_surface_checks(
         )
         expected_exec = (
             interpreter or "",
+            "-B",
             "-I",
             "-m",
             _WRITER_BOOTSTRAP_MODULE,
@@ -1692,11 +2078,43 @@ def _writer_authority_surface_checks(
             and _empty_sequence(
                 inventory.get("writer_uid_unattributed_processes")
             )
+            and _reverse_activation_is_absent(
+                inventory.get("writer_unit_reverse_activation"),
+                unit_name=DEFAULT_WRITER_UNIT,
+            )
             and _empty_sequence(
                 inventory.get("gateway_writable_writer_unit_files")
             )
             and _empty_sequence(
                 inventory.get("gateway_child_writable_writer_unit_files")
+            )
+            and _strings(inventory.get("gateway_uid_service_units"))
+            == (DEFAULT_GATEWAY_UNIT,)
+            and _empty_sequence(inventory.get("gateway_uid_timer_units"))
+            and _empty_sequence(inventory.get("gateway_uid_transient_units"))
+            and _empty_sequence(inventory.get("gateway_uid_cron_entries"))
+            and _empty_sequence(inventory.get("gateway_uid_at_jobs"))
+            and _strings(inventory.get("gateway_uid_process_executables"))
+            == (str(writer_policy.get("interpreter") or ""),)
+            and _empty_sequence(
+                inventory.get("gateway_uid_unattributed_processes")
+            )
+            and _reverse_activation_is_absent(
+                inventory.get("gateway_unit_reverse_activation"),
+                unit_name=DEFAULT_GATEWAY_UNIT,
+            )
+        )
+        user_systemd_safe = (
+            user_systemd.get("complete") is True
+            and _user_systemd_is_absent(
+                user_systemd.get("gateway"),
+                uid=gateway_uid,
+                user_name="muncho-gateway",
+            )
+            and _user_systemd_is_absent(
+                user_systemd.get("writer"),
+                uid=writer_uid,
+                user_name="muncho-canonical-writer",
             )
         )
     except (TypeError, ValueError):
@@ -1711,7 +2129,7 @@ def _writer_authority_surface_checks(
         PreflightCheck(
             "writer_authority.identities_exact",
             fresh_root_evidence and identities_exact,
-            "gateway, every observed gateway child, and writer must have exact effective UID/GID and only their dedicated supplementary group",
+            "gateway, every observed gateway child, and writer must have exact effective UID/GID and Linux Groups including their primary and dedicated group",
         ),
         PreflightCheck(
             "writer_authority.dangerous_groups_absent",
@@ -1733,6 +2151,12 @@ def _writer_authority_surface_checks(
             "gateway children must have no systemd, transient-unit, timer, cron, UID-switch, sudo/doas, capability, or polkit authority over the writer boundary",
         ),
         PreflightCheck(
+            "writer_authority.writer_denied",
+            fresh_root_evidence
+            and _authority_is_denied(surface.get("writer_authority")),
+            "writer must have no systemd, transient-unit, timer, cron, UID-switch, sudo/doas, capability, or polkit authority outside its service boundary",
+        ),
+        PreflightCheck(
             "writer_authority.exporter_manifest_exact",
             fresh_root_evidence and exporter_manifest_exact,
             "projection exporter policy must pin the same immutable artifact, exact one-shot argv, export path, and timer schedule",
@@ -1748,6 +2172,11 @@ def _writer_authority_surface_checks(
             "writer_authority.privileged_inventory_exact",
             fresh_root_evidence and inventory_exact,
             "writer UID services and timers must match the exact allow-list with no cron, at, transient, unattributed, or gateway-writable execution surface",
+        ),
+        PreflightCheck(
+            "writer_authority.user_systemd_absent",
+            fresh_root_evidence and user_systemd_safe,
+            "gateway and writer user managers, linger, runtime buses, per-user services, timers, and transient units must be absent",
         ),
     ]
 
@@ -1802,7 +2231,89 @@ def _gateway_process_checks(
     ]
 
 
-def _runtime_secret_source_checks(value: Any) -> list[PreflightCheck]:
+def _writer_only_discord_edge_checks(
+    value: Any,
+    *,
+    collected_at_unix: int,
+) -> list[PreflightCheck]:
+    """Require the privileged Discord surface to be wholly absent.
+
+    This is a mechanical deployment boundary, not semantic routing.  The
+    writer-only canary deliberately has no Discord identity or credential, so
+    every exact edge entry point must be absent before the gateway is allowed
+    to become ready.
+    """
+
+    evidence = _mapping(value)
+    raw_process_pids = evidence.get("process_pids")
+    process_pids_exact = (
+        isinstance(raw_process_pids, Sequence)
+        and not isinstance(raw_process_pids, (str, bytes, bytearray))
+        and not raw_process_pids
+    )
+    observed_at_unix = _integer(evidence.get("observed_at_unix"))
+    evidence_fresh = (
+        set(evidence) == _WRITER_ONLY_DISCORD_EDGE_KEYS
+        and evidence.get("complete") is True
+        and evidence.get("collected_by_uid") == 0
+        and collected_at_unix >= 0
+        and observed_at_unix >= 0
+        and 0
+        <= collected_at_unix - observed_at_unix
+        <= _MAX_GATEWAY_PROCESS_EVIDENCE_AGE_SECONDS
+    )
+    return [
+        PreflightCheck(
+            "discord_edge.writer_only_evidence_fresh",
+            evidence_fresh,
+            "writer-only Discord absence evidence must be exact, UID-0-collected, and no more than 30 seconds old",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_disabled",
+            evidence.get("gateway_enabled") is False
+            and evidence.get("writer_authority_enabled") is False,
+            "gateway Discord egress and writer Discord authority must both be disabled",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_unit_absent",
+            evidence.get("unit_name") == DEFAULT_DISCORD_EDGE_UNIT
+            and evidence.get("unit_exists") is False
+            and evidence.get("unit_enabled") is False
+            and evidence.get("unit_active") is False
+            and _integer(evidence.get("main_pid")) == 0,
+            "the privileged Discord egress unit and MainPID must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_config_absent",
+            evidence.get("config_path") == _DISCORD_EDGE_CONFIG_PATH
+            and evidence.get("config_exists") is False,
+            "the privileged Discord egress config must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_token_absent",
+            evidence.get("token_path") == _DISCORD_EDGE_TOKEN_PATH
+            and evidence.get("token_exists") is False,
+            "the privileged Discord bot-token credential must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_socket_absent",
+            evidence.get("socket_path") == str(DEFAULT_DISCORD_EDGE_SOCKET_PATH)
+            and evidence.get("socket_exists") is False,
+            "the privileged Discord egress socket must be absent",
+        ),
+        PreflightCheck(
+            "discord_edge.writer_only_process_absent",
+            process_pids_exact,
+            "no privileged Discord egress process may exist in writer-only mode",
+        ),
+    ]
+
+
+def _runtime_secret_source_checks(
+    value: Any,
+    *,
+    discord_edge_enabled: bool,
+) -> list[PreflightCheck]:
     evidence = _mapping(value)
     legacy = _mapping(evidence.get("legacy_hermes_env"))
     pgpass = _mapping(evidence.get("pgpass"))
@@ -1948,8 +2459,12 @@ def _runtime_secret_source_checks(value: Any) -> list[PreflightCheck]:
         ),
         PreflightCheck(
             "runtime_secrets.discord_source_isolated",
-            "discord_bot_token" in source_names,
-            "the Discord bot token must have a root/systemd source that is file-inaccessible to gateway children",
+            (
+                "discord_bot_token" in source_names
+                if discord_edge_enabled
+                else "discord_bot_token" not in source_names
+            ),
+            "the Discord bot token must be isolated when enabled and wholly absent in writer-only mode",
         ),
     ]
 
@@ -2159,6 +2674,42 @@ def _parse_database_attestation(
 ) -> tuple[str, WriterPrivilegePolicy, PrivilegeAttestation]:
     database = _mapping(value)
     expected_user = str(database.get("expected_user") or "")
+    connection = _mapping(database.get("connection"))
+    if set(connection) != {
+        "host",
+        "tls_server_name",
+        "port",
+        "database",
+        "user",
+    }:
+        raise ValueError("managed HBA connection evidence is not exact")
+    connection_host = connection.get("host")
+    try:
+        connection_address = ipaddress.ip_address(connection_host)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("managed HBA connection host is not exact IPv4") from exc
+    if (
+        connection_address.version != 4
+        or str(connection_address) != connection_host
+        or not connection_address.is_private
+        or connection_address.is_loopback
+        or connection_address.is_link_local
+        or connection_address.is_multicast
+        or connection_address.is_reserved
+        or connection_address.is_unspecified
+    ):
+        raise ValueError("managed HBA connection host is not exact private IPv4")
+    validate_tls_server_name(connection.get("tls_server_name"))
+    if (
+        type(connection.get("port")) is not int
+        or not 1 <= connection["port"] <= 65535
+        or not isinstance(connection.get("database"), str)
+        or not connection["database"]
+        or not isinstance(connection.get("user"), str)
+        or not connection["user"]
+        or connection.get("user") != expected_user
+    ):
+        raise ValueError("managed HBA connection evidence is invalid")
     policy_raw = _mapping(database.get("policy"))
     attestation_raw = _mapping(database.get("attestation"))
     raw_schema_privileges = tuple(
@@ -2217,7 +2768,6 @@ def _parse_database_attestation(
             "managed cloudsqladmin HBA rejection receipt does not match production"
         )
     if managed_hba_receipt is not None:
-        connection = _mapping(database.get("connection"))
         evidence = _mapping(
             database.get("managed_cloudsqladmin_hba_rejection_evidence")
         )
@@ -2227,8 +2777,6 @@ def _parse_database_attestation(
         evidence_receipt = managed_cloudsqladmin_hba_receipt_from_mapping(
             evidence_receipt_raw
         )
-        if set(connection) != {"host", "port", "database", "user"}:
-            raise ValueError("managed HBA connection evidence is not exact")
         if set(evidence) != {
             "complete",
             "collector_uid",
@@ -2236,6 +2784,7 @@ def _parse_database_attestation(
             "source_mode",
             "source_symlink",
             "same_host",
+            "same_tls_server_name",
             "same_port",
             "same_ca",
             "same_user",
@@ -2246,6 +2795,8 @@ def _parse_database_attestation(
             raise ValueError("managed HBA root evidence fields are not exact")
         if (
             connection.get("host") != managed_hba_receipt.host
+            or connection.get("tls_server_name")
+            != managed_hba_receipt.tls_server_name
             or type(connection.get("port")) is not int
             or connection.get("port") != managed_hba_receipt.port
             or connection.get("database") == "cloudsqladmin"
@@ -2260,15 +2811,25 @@ def _parse_database_attestation(
                 evidence.get(name) is not True
                 for name in (
                     "same_host",
+                    "same_tls_server_name",
                     "same_port",
                     "same_ca",
                     "same_user",
                     "same_credential",
                 )
             )
-            or evidence_receipt != managed_hba_receipt
-            or evidence.get("receipt_sha256") != managed_hba_digest
-            or not managed_hba_receipt.is_fresh(collected_at_unix)
+            or evidence_receipt.host != managed_hba_receipt.host
+            or evidence_receipt.tls_server_name
+            != managed_hba_receipt.tls_server_name
+            or evidence_receipt.port != managed_hba_receipt.port
+            or evidence_receipt.user != managed_hba_receipt.user
+            or evidence_receipt.server_certificate_sha256
+            != managed_hba_receipt.server_certificate_sha256
+            or evidence.get("receipt_sha256") != evidence_receipt.sha256
+            or not evidence_receipt.is_fresh(collected_at_unix)
+            or not 0
+            <= collected_at_unix - evidence_receipt.observed_at_unix
+            <= _MAX_ACTIVE_HBA_EVIDENCE_AGE_SECONDS
         ):
             raise ValueError("managed HBA root evidence is invalid or stale")
     elif database.get("managed_cloudsqladmin_hba_rejection_evidence") not in (
@@ -2430,6 +2991,11 @@ def _systemd_checks(properties: Mapping[str, Any]) -> list[PreflightCheck]:
                 _disabled_or_empty(properties.get("AmbientCapabilities")),
                 "must be empty",
             ),
+            PreflightCheck(
+                "systemd.LimitCORE",
+                str(properties.get("LimitCORE") or "") == "0",
+                "must be zero",
+            ),
         )
     )
     raw_families = properties.get("RestrictAddressFamilies")
@@ -2458,6 +3024,8 @@ def _systemd_checks(properties: Mapping[str, Any]) -> list[PreflightCheck]:
 def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
     """Evaluate deterministic deployment invariants from a collected snapshot."""
 
+    deployment_mode = snapshot.get("deployment_mode")
+    writer_only_mode = deployment_mode == _WRITER_ONLY_DEPLOYMENT_MODE
     gateway_uid = _integer(snapshot.get("gateway_uid"))
     gateway_gid = _integer(snapshot.get("gateway_gid"))
     writer_uid = _integer(snapshot.get("writer_uid"))
@@ -2472,16 +3040,25 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
     credential_mode = _mode(credential.get("mode"))
     projection_export_mode = _mode(projection_export.get("mode"))
     collected_at_unix = _integer(snapshot.get("collected_at_unix"))
-    raw_supplementary_gids = snapshot.get("writer_supplementary_gids")
-    if isinstance(raw_supplementary_gids, Sequence) and not isinstance(
-        raw_supplementary_gids,
-        (str, bytes, bytearray),
-    ):
-        supplementary_gids = tuple(_integer(value) for value in raw_supplementary_gids)
-    else:
-        supplementary_gids = ()
+    try:
+        gateway_supplementary_gids = _strict_integers(
+            snapshot.get("gateway_supplementary_gids")
+        )
+    except ValueError:
+        gateway_supplementary_gids = ()
+    try:
+        writer_supplementary_gids = _strict_integers(
+            snapshot.get("writer_supplementary_gids")
+        )
+    except ValueError:
+        writer_supplementary_gids = ()
 
     checks: list[PreflightCheck] = [
+        PreflightCheck(
+            "deployment.writer_only_mode",
+            writer_only_mode,
+            "this preflight authorizes only the exact writer-only canary mode",
+        ),
         PreflightCheck(
             "identity.distinct_uids",
             gateway_uid >= 0 and writer_uid >= 0 and gateway_uid != writer_uid,
@@ -2496,9 +3073,16 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
             "projector GID must differ from writer and socket client groups",
         ),
         PreflightCheck(
+            "identity.gateway_socket_membership",
+            gateway_supplementary_gids
+            == tuple(sorted((gateway_gid, expected_group_gid))),
+            "gateway Linux Groups must contain exactly its primary and dedicated socket-client GIDs",
+        ),
+        PreflightCheck(
             "identity.writer_projector_membership",
-            supplementary_gids == (projector_gid,),
-            "writer must have exactly the dedicated projector supplementary GID",
+            writer_supplementary_gids
+            == tuple(sorted((writer_gid, projector_gid))),
+            "writer Linux Groups must contain exactly its primary and dedicated projector GIDs",
         ),
         PreflightCheck(
             "helper.legacy_absent",
@@ -2574,7 +3158,18 @@ def evaluate_snapshot(snapshot: Mapping[str, Any]) -> PreflightReport:
             collected_at_unix=collected_at_unix,
         )
     )
-    checks.extend(_runtime_secret_source_checks(snapshot.get("runtime_secret_sources")))
+    checks.extend(
+        _runtime_secret_source_checks(
+            snapshot.get("runtime_secret_sources"),
+            discord_edge_enabled=not writer_only_mode,
+        )
+    )
+    checks.extend(
+        _writer_only_discord_edge_checks(
+            snapshot.get("discord_edge"),
+            collected_at_unix=collected_at_unix,
+        )
+    )
     checks.extend(
         _writer_deployment_checks(
             snapshot.get("writer_deployment"),
@@ -2747,8 +3342,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         report = PreflightReport(
             (PreflightCheck("snapshot.valid", False, f"invalid snapshot: {exc}"),)
         )
+    # Arbitrary JSON is useful for diagnostics and regression tests, but it is
+    # never deployment authority.  Only the UID-0 trusted collector may emit
+    # an activation receipt after collecting live host evidence.
+    report = PreflightReport(
+        (
+            *report.checks,
+            PreflightCheck(
+                "snapshot.non_authoritative",
+                False,
+                "offline JSON evaluation cannot authorize activation",
+            ),
+        )
+    )
     print(json.dumps(report.to_dict(), sort_keys=True, separators=(",", ":")))
-    return 0 if report.ok else 2
+    return 2
 
 
 if __name__ == "__main__":
