@@ -723,6 +723,34 @@ def test_open_admin_config_uses_0400_memfd_and_zeroizes_input(
     assert secret == bytearray(64)
 
 
+def test_open_admin_config_preserves_secret_transport_failure_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    @contextmanager
+    def descriptor(_secret: bytearray) -> Iterator[int]:
+        raise runtime.phase_b_runtime.PhaseBRuntimeError(
+            "phase_b_runtime_anonymous_secret_unavailable"
+        )
+        yield -1
+
+    monkeypatch.setattr(runtime.phase_b_runtime, "_secret_descriptor", descriptor)
+    context = SimpleNamespace(
+        gate={"temporary_admin_username": "muncho_canary_admin_aaaaaaaaaaaaaaaa"},
+        dependencies=SimpleNamespace(
+            open_session=lambda _config: pytest.fail("DB session was opened")
+        ),
+    )
+    secret = bytearray(b"A" * 64)
+
+    with pytest.raises(
+        runtime.SchemaReconciliationRuntimeError,
+        match="schema_reconciliation_runtime_admin_secret_transport_failed",
+    ):
+        runtime._open_admin_config(context, secret)
+
+    assert secret == bytearray(64)
+
+
 def test_preflight_apply_and_reattest_reuse_one_authenticated_socket(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
