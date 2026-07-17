@@ -4,6 +4,7 @@ import copy
 import hashlib
 import os
 import stat
+import tempfile
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
@@ -37,6 +38,16 @@ ASSET = (
     / "assets"
     / "canonical_writer_schema_contract_v1.json"
 )
+
+
+@pytest.fixture
+def repository_tmp_path() -> Iterator[Path]:
+    repository = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(
+        prefix="schema-reconciliation-runtime-",
+        dir=repository,
+    ) as directory:
+        yield Path(directory)
 
 
 def test_runtime_failures_are_eligible_for_the_sealed_wire_code_boundary():
@@ -618,8 +629,10 @@ def test_authenticated_session_lease_allows_only_sequential_borrows():
     assert session.closed is True
 
 
-def test_durable_replay_uses_byte_identical_stored_core_preflight(tmp_path: Path):
-    dependencies = _dependencies(tmp_path)
+def test_durable_replay_uses_byte_identical_stored_core_preflight(
+    repository_tmp_path: Path,
+):
+    dependencies = _dependencies(repository_tmp_path)
     journal = dependencies.journal_factory()
     target, plan, _asset = _target_plan_asset()
     truth = _truth()
