@@ -4768,26 +4768,53 @@ def _require_private_owner_directory(
         raise OwnerLauncherError("trusted_runtime_directory_invalid")
 
 
-def _darwin_rename_no_replace(
+def _atomic_rename_no_replace(
     source: str,
     destination: str,
     *,
     exists_code: str,
     failed_code: str,
 ) -> None:
-    """Atomically publish one Darwin pathname without replacing any object."""
+    """Atomically publish one pathname without replacing any existing object."""
 
-    if sys.platform != "darwin":
-        raise OwnerLauncherError("atomic_no_replace_unavailable")
     try:
         libc = ctypes.CDLL(None, use_errno=True)
-        renamex = libc.renamex_np
-        renamex.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-        renamex.restype = ctypes.c_int
+        if sys.platform == "darwin":
+            rename_no_replace = libc.renamex_np
+            rename_no_replace.argtypes = (
+                ctypes.c_char_p,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            rename_no_replace.restype = ctypes.c_int
+            arguments = (
+                os.fsencode(source),
+                os.fsencode(destination),
+                0x00000004,  # RENAME_EXCL
+            )
+        elif sys.platform == "linux":
+            rename_no_replace = libc.renameat2
+            rename_no_replace.argtypes = (
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            )
+            rename_no_replace.restype = ctypes.c_int
+            arguments = (
+                -100,  # AT_FDCWD
+                os.fsencode(source),
+                -100,  # AT_FDCWD
+                os.fsencode(destination),
+                1,  # RENAME_NOREPLACE
+            )
+        else:
+            raise OwnerLauncherError("atomic_no_replace_unavailable")
     except (AttributeError, OSError):
         raise OwnerLauncherError("atomic_no_replace_unavailable") from None
     ctypes.set_errno(0)
-    if renamex(os.fsencode(source), os.fsencode(destination), 0x00000004) != 0:
+    if rename_no_replace(*arguments) != 0:
         error = ctypes.get_errno()
         if error in {
             errno.EEXIST,
@@ -4798,9 +4825,9 @@ def _darwin_rename_no_replace(
 
 
 def _rename_directory_no_replace(source: str, destination: str) -> None:
-    """Darwin atomic directory publication with an explicit exclusion flag."""
+    """Atomic directory publication with an explicit exclusion flag."""
 
-    _darwin_rename_no_replace(
+    _atomic_rename_no_replace(
         source,
         destination,
         exists_code="trusted_runtime_destination_exists",
@@ -4819,7 +4846,7 @@ def _publish_regular_no_replace(
     """Atomically add one regular file name without a two-link crash state."""
 
     del cleanup_code
-    _darwin_rename_no_replace(
+    _atomic_rename_no_replace(
         source,
         destination,
         exists_code=exists_code,
@@ -7181,7 +7208,7 @@ def _publish_trusted_owner_support_runtime(
             raise OwnerLauncherError("trusted_owner_support_publish_failed") from None
         published_here = False
         try:
-            _darwin_rename_no_replace(
+            _atomic_rename_no_replace(
                 stage_root,
                 destination,
                 exists_code="trusted_owner_support_destination_exists",

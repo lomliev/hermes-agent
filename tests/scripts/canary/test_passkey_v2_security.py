@@ -12,6 +12,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+
+
+ISOLATED_RUNTIME_ENV = "MUNCHO_OWNER_GATE_ISOLATED_TEST_RUNTIME"
+if os.environ.get(ISOLATED_RUNTIME_ENV) != "1":
+    pytest.skip(
+        "runs through test_passkey_v2_isolated_runtime.py under the exact "
+        "owner-gate WebAuthn dependency boundary",
+        allow_module_level=True,
+    )
+
 import cbor2
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
@@ -22,15 +32,6 @@ from scripts.canary import passkey_v2_sqlite as database
 from scripts.canary import passkey_v2_webauthn as webauthn
 from scripts.canary.passkey_v2_signer import ReceiptSigner
 
-
-ISOLATED_RUNTIME_ENV = "MUNCHO_OWNER_GATE_ISOLATED_TEST_RUNTIME"
-pytestmark = pytest.mark.skipif(
-    os.environ.get(ISOLATED_RUNTIME_ENV) != "1",
-    reason=(
-        "runs through test_passkey_v2_isolated_runtime.py under the exact "
-        "owner-gate WebAuthn dependency boundary"
-    ),
-)
 
 NOW = 1_785_000_000
 OWNER = "1279454038731264061"

@@ -856,9 +856,11 @@ def test_transport_concurrently_exchanges_near_limit_canonical_frames(
 ) -> None:
     request = b'{"data":"' + b"r" * 900_000 + b'"}'
     response = b'{"data":"' + b"s" * 700_000 + b'"}'
+    # Generate the frame in the child: embedding it in ``python -c`` exceeds
+    # Linux MAX_ARG_STRLEN before the transport itself can be exercised.
     source = (
         "import os;"
-        f"payload={response!r};"
+        "payload=b'{\"data\":\"'+b's'*700_000+b'\"}';"
         "offset=0;"
         "\nwhile offset < len(payload):\n"
         " offset += os.write(1,payload[offset:offset+65536])\n"

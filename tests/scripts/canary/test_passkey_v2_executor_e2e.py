@@ -13,6 +13,16 @@ from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+
+
+ISOLATED_RUNTIME_ENV = "MUNCHO_OWNER_GATE_ISOLATED_TEST_RUNTIME"
+if os.environ.get(ISOLATED_RUNTIME_ENV) != "1":
+    pytest.skip(
+        "runs through test_passkey_v2_isolated_runtime.py under the exact "
+        "owner-gate WebAuthn dependency boundary",
+        allow_module_level=True,
+    )
+
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from scripts.canary import passkey_v2_protocol as protocol
@@ -31,20 +41,11 @@ from tests.scripts.canary.test_storage_growth_trusted_collector import (
     _trusted_iam_projection,
 )
 from tests.scripts.canary.test_passkey_v2_security import (
-    ISOLATED_RUNTIME_ENV,
     NOW,
     _challenge,
     _credential_and_assertion,
 )
 
-
-pytestmark = pytest.mark.skipif(
-    os.environ.get(ISOLATED_RUNTIME_ENV) != "1",
-    reason=(
-        "runs through test_passkey_v2_isolated_runtime.py under the exact "
-        "owner-gate WebAuthn dependency boundary"
-    ),
-)
 
 RELEASE = "a" * 40
 SHA = "b" * 64

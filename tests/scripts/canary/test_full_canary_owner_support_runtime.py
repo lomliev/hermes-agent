@@ -670,7 +670,7 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
 
     monkeypatch.setattr(
         launcher,
-        "_darwin_rename_no_replace",
+        "_atomic_rename_no_replace",
         destination_exists,
     )
 
@@ -690,10 +690,10 @@ def test_unreceipted_existing_destination_is_rebuilt_and_compared(
 
 
 @pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="requires Darwin renamex_np publication semantics",
+    sys.platform not in {"darwin", "linux"},
+    reason="requires supported atomic no-replace publication semantics",
 )
-def test_fresh_darwin_publication_reseals_the_destination_root(
+def test_fresh_platform_publication_reseals_the_destination_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -745,8 +745,8 @@ def test_fresh_darwin_publication_reseals_the_destination_root(
 
 
 @pytest.mark.skipif(
-    sys.platform != "darwin",
-    reason="requires Darwin renamex_np publication semantics",
+    sys.platform not in {"darwin", "linux"},
+    reason="requires supported atomic no-replace publication semantics",
 )
 def test_retry_recovers_exact_interrupted_post_rename_root(
     tmp_path: Path,
@@ -778,7 +778,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
         wheel_path.write_bytes(wheel_payload)
         wheel_path.chmod(0o600)
 
-    atomic_rename = launcher._darwin_rename_no_replace
+    atomic_rename = launcher._atomic_rename_no_replace
 
     def interrupt_after_rename(*args: object, **kwargs: object) -> None:
         atomic_rename(*args, **kwargs)
@@ -786,7 +786,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
 
     monkeypatch.setattr(
         launcher,
-        "_darwin_rename_no_replace",
+        "_atomic_rename_no_replace",
         interrupt_after_rename,
     )
     with pytest.raises(launcher.OwnerLauncherError) as interrupted:
@@ -804,7 +804,7 @@ def test_retry_recovers_exact_interrupted_post_rename_root(
 
     monkeypatch.setattr(
         launcher,
-        "_darwin_rename_no_replace",
+        "_atomic_rename_no_replace",
         atomic_rename,
     )
     root, tree, manifest = launcher._publish_trusted_owner_support_runtime(
