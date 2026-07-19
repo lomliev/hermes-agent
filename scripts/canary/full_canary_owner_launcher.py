@@ -3695,7 +3695,7 @@ class PinnedOwnerGateHostIdentityReceipt:
                     unavailable_code="owner_gate_iap_identity_receipt_invalid",
                     invalid_code="owner_gate_iap_identity_receipt_invalid",
                     changed_code="owner_gate_iap_identity_receipt_changed",
-                    allowed_owners=frozenset({os.getuid()}),
+                    allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
                 )
                 if (
                     len(public_raw) != 32
