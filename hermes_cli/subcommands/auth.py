@@ -62,6 +62,13 @@ def build_auth_parser(subparsers, *, cmd_auth: Callable) -> None:
         "reset", help="Clear exhaustion status for all credentials for a provider"
     )
     auth_reset.add_argument("provider", help="Provider id")
+    auth_use = auth_subparsers.add_parser(
+        "use", help="Prefer a healthy pooled credential by index, id, or label"
+    )
+    auth_use.add_argument("provider", help="Provider id")
+    auth_use.add_argument(
+        "target", help="Credential index, entry id, or exact label"
+    )
     auth_status = auth_subparsers.add_parser(
         "status", help="Show auth status for a provider"
     )

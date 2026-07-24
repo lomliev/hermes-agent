@@ -2015,6 +2015,38 @@ class CredentialPool:
                 self._current_id = None
             return removed
 
+    def prefer_target(self, target: Any) -> Tuple[Optional[PooledCredential], Optional[str]]:
+        """Persist one credential as the first choice without changing health."""
+        _index, matched, error = self.resolve_target(target)
+        if matched is None:
+            return None, error
+
+        with self._lock:
+            matched = next(
+                (entry for entry in self._entries if entry.id == matched.id),
+                None,
+            )
+            if matched is None:
+                return None, f'Credential "{target}" changed while it was selected.'
+
+            ordered = [
+                matched,
+                *(entry for entry in self._entries if entry.id != matched.id),
+            ]
+            reordered = [
+                replace(entry, priority=priority)
+                for priority, entry in enumerate(ordered)
+            ]
+            changed = any(
+                before.id != after.id or before.priority != after.priority
+                for before, after in zip(self._entries, reordered)
+            )
+            self._entries = reordered
+            self._current_id = matched.id
+            if changed:
+                self._persist()
+            return self._current_unlocked() or matched, None
+
     def resolve_target(self, target: Any) -> Tuple[Optional[int], Optional[PooledCredential], Optional[str]]:
         raw = str(target or "").strip()
         if not raw:

@@ -14,6 +14,7 @@ from agent.credential_pool import (
     CUSTOM_POOL_PREFIX,
     SOURCE_MANUAL,
     SOURCE_MANUAL_DEVICE_CODE,
+    STATUS_DEAD,
     STATUS_EXHAUSTED,
     STRATEGY_FILL_FIRST,
     STRATEGY_ROUND_ROBIN,
@@ -506,6 +507,36 @@ def auth_reset_command(args) -> None:
     print(f"Reset status on {count} {provider} credentials")
 
 
+def auth_use_command(args) -> None:
+    """Persist one healthy pooled credential as the provider preference."""
+    provider = _normalize_provider(getattr(args, "provider", ""))
+    target = getattr(args, "target", None)
+    pool = load_pool(provider)
+    _index, matched, error = pool.resolve_target(target)
+    if matched is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+
+    if matched.last_status == STATUS_DEAD:
+        raise SystemExit(
+            f'Credential "{matched.label}" has a terminal auth failure. '
+            f"Re-authenticate it before selecting it for {provider}."
+        )
+    if matched.last_status == STATUS_EXHAUSTED:
+        raise SystemExit(
+            f'Credential "{matched.label}" is currently exhausted. '
+            "Choose another credential or wait for its cooldown."
+        )
+
+    preferred, error = pool.prefer_target(matched.id)
+    if preferred is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
+    print(f'Preferred {provider} credential: "{preferred.label}"')
+    print(
+        "New agent sessions will use this preference. "
+        "Restart long-running gateways to apply it immediately."
+    )
+
+
 def auth_status_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", "") or "")
     if not provider:
@@ -788,6 +819,9 @@ def auth_command(args) -> None:
         return
     if action == "reset":
         auth_reset_command(args)
+        return
+    if action == "use":
+        auth_use_command(args)
         return
     if action == "status":
         auth_status_command(args)
