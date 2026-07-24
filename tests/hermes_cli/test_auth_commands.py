@@ -751,6 +751,117 @@ def test_auth_remove_accepts_label_target(tmp_path, monkeypatch):
     assert entries[0]["label"] == "work-account"
 
 
+def test_auth_use_persists_selected_healthy_credential_first(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "work-account",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-1",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "backup-account",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "tok-2",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_use_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "backup-account"
+
+    auth_use_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert [entry["label"] for entry in entries] == [
+        "backup-account",
+        "work-account",
+    ]
+    assert [entry["priority"] for entry in entries] == [0, 1]
+    output = capsys.readouterr().out
+    assert "backup-account" in output
+    assert "tok-1" not in output
+    assert "tok-2" not in output
+
+
+def test_auth_use_refuses_exhausted_credential_without_clearing_status(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr(
+        "agent.credential_pool._seed_from_singletons",
+        lambda provider, entries: (False, set()),
+    )
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-1",
+                        "label": "healthy-account",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "tok-1",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "limited-account",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "tok-2",
+                        "last_status": "exhausted",
+                        "last_error_code": 429,
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_use_command
+
+    class _Args:
+        provider = "openai-codex"
+        target = "limited-account"
+
+    with pytest.raises(SystemExit, match="currently exhausted"):
+        auth_use_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["openai-codex"]
+    assert [entry["label"] for entry in entries] == [
+        "healthy-account",
+        "limited-account",
+    ]
+    assert entries[1]["last_status"] == "exhausted"
+
+
 def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     monkeypatch.setattr(

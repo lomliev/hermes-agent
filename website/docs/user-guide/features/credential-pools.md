@@ -115,7 +115,13 @@ Type [1/2]:
 | `hermes auth add <provider> --type api-key --api-key <key>` | Add an API key non-interactively |
 | `hermes auth add <provider> --type oauth` | Add an OAuth credential via browser login |
 | `hermes auth remove <provider> <index>` | Remove credential by 1-based index |
+| `hermes auth use <provider> <index\|id\|label>` | Prefer one healthy credential for new agent sessions |
 | `hermes auth reset <provider>` | Clear all cooldowns/exhaustion status |
+
+`auth use` changes only the persisted priority. It never clears an exhausted
+or terminally failed credential, and it refuses to select one until the
+credential is healthy again. Restart a long-running gateway if the new
+preference must take effect immediately.
 
 ## Rotation Strategies
 

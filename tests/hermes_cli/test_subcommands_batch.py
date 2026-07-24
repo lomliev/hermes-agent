@@ -105,6 +105,21 @@ def test_config_get_unset_subcommands_parse():
     assert ns.key == "terminal.backend"
 
 
+def test_auth_use_subcommand_parses_provider_and_target():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("auth")
+    build_auth_parser(sub, cmd_auth=handler)
+
+    ns = parser.parse_args(
+        ["auth", "use", "openai-codex", "backup-account"]
+    )
+    assert ns.func is handler
+    assert ns.auth_action == "use"
+    assert ns.provider == "openai-codex"
+    assert ns.target == "backup-account"
+
+
 def test_dashboard_builder_two_handlers():
     parser = argparse.ArgumentParser(prog="hermes")
     sub = parser.add_subparsers(dest="command")
