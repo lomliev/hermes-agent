@@ -1,0 +1,853 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import yaml
+
+from plugins.skyai_customer import register
+from plugins.skyai_customer import public_tools
+
+
+SKYAI_TOOL_NAMES = {
+    "skyai_catalog_search",
+    "skyai_product_detail",
+    "skyai_product_slots",
+    "skyai_campaign_knowledge",
+    "skyai_support_knowledge",
+    "skyai_event_log_append",
+    "skyai_voice_transfer_to_human",
+}
+
+
+class FakeContext:
+    def __init__(self) -> None:
+        self.tools: list[dict] = []
+
+    def register_tool(self, **kwargs) -> None:
+        self.tools.append(kwargs)
+
+
+def test_registers_public_safe_skyai_tools() -> None:
+    ctx = FakeContext()
+
+    register(ctx)
+
+    names = {tool["name"] for tool in ctx.tools}
+    assert names == SKYAI_TOOL_NAMES
+    assert {tool["toolset"] for tool in ctx.tools} == {"skyai_customer"}
+
+
+def test_manifest_is_standalone_opt_in_plugin() -> None:
+    manifest = yaml.safe_load(Path("plugins/skyai_customer/plugin.yaml").read_text(encoding="utf-8"))
+
+    assert manifest["name"] == "skyai-customer"
+    assert manifest["kind"] == "standalone"
+    assert set(manifest["provides_tools"]) == SKYAI_TOOL_NAMES
+
+
+def test_plugin_manager_loads_skyai_customer_only_when_enabled(monkeypatch, tmp_path: Path) -> None:
+    from hermes_cli import plugins as plugins_mod
+    from tools.registry import registry
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        yaml.safe_dump({"plugins": {"enabled": ["skyai-customer"]}}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    for tool_name in SKYAI_TOOL_NAMES:
+        registry._tools.pop(tool_name, None)
+
+    manager = plugins_mod.PluginManager()
+    try:
+        manager.discover_and_load()
+
+        loaded = manager._plugins.get("skyai-customer")
+        assert loaded is not None
+        assert loaded.enabled is True
+        assert set(loaded.tools_registered) == SKYAI_TOOL_NAMES
+        assert {registry._tools[name].toolset for name in SKYAI_TOOL_NAMES} == {"skyai_customer"}
+    finally:
+        for tool_name in SKYAI_TOOL_NAMES:
+            registry._tools.pop(tool_name, None)
+
+
+def test_registered_tool_handlers_accept_hermes_dispatch_context(monkeypatch, tmp_path: Path) -> None:
+    from tools.registry import registry
+
+    ctx = FakeContext()
+    register(ctx)
+    monkeypatch.setenv("SKYAI_V2_EVENT_LOG_PATH", str(tmp_path / "events.jsonl"))
+
+    try:
+        for tool in ctx.tools:
+            registry.register(
+                name=tool["name"],
+                schema=tool["schema"],
+                handler=tool["handler"],
+                toolset=tool["toolset"],
+            )
+        raw_result = registry.dispatch(
+            "skyai_event_log_append",
+            {
+                "event_type": "product_recommended",
+                "properties": {"product_id": 10536},
+            },
+            task_id="runtime-task",
+        )
+        assert isinstance(raw_result, str)
+        result = json.loads(raw_result)
+
+        assert result["status"] == "ok"
+        assert (tmp_path / "events.jsonl").exists()
+    finally:
+        for tool_name in SKYAI_TOOL_NAMES:
+            registry._tools.pop(tool_name, None)
+
+
+def test_voice_transfer_tool_returns_structured_action() -> None:
+    result = public_tools.handle_skyai_voice_transfer_to_human(
+        reason="caller prefers a teammate",
+        spoken_reply="Разбира се, ще Ви прехвърля към колега.",
+    )
+
+    assert result["status"] == "ok"
+    assert result["voice_action"] == "transfer_to_human"
+    assert result["transfer"] == {
+        "target": "operator_queue",
+        "reason": "caller prefers a teammate",
+    }
+    assert result["spoken_reply"] == "Разбира се, ще Ви прехвърля към колега."
+
+
+def test_product_detail_normalizes_public_gift_path(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        calls.append(url)
+        return {
+            "data": {
+                "name": "Офроуд с ATV",
+                "slug": "офроуд-атв-под-наем/семейна-офроуд-разходка-с-атв",
+                "price": "88",
+                "duration": "90 - 120 минути",
+                "configurator": {
+                    "additions": [
+                        {
+                            "options": [
+                                {
+                                    "label": "- за 1 участник над 18 г. на 1 ATV",
+                                    "price": "88",
+                                }
+                            ]
+                        }
+                    ]
+                },
+                "secret": "drop-me",
+            }
+        }
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_product_detail(
+        product_url="https://skyvision.bg/подарък/офроуд-атв-под-наем/семейна-офроуд-разходка-с-атв/"
+    )
+
+    assert result["status"] == "ok"
+    assert result["product_path"] == "офроуд-атв-под-наем/семейна-офроуд-разходка-с-атв"
+    assert "%D0%BF%D0%BE%D0%B4%D0%B0%D1%80%D1%8A%D0%BA" not in calls[0]
+    assert result["detail"]["title"] == "Офроуд с ATV"
+    assert result["detail"]["public_url"] == (
+        "https://skyvision.bg/подарък/офроуд-атв-под-наем/семейна-офроуд-разходка-с-атв/"
+    )
+    assert result["detail"]["price_eur"] == "44.99"
+    assert result["detail"]["configurator"]["options"] == [
+        {
+            "label": "- за 1 участник над 18 г. на 1 ATV",
+            "price_bgn": "88.00",
+            "price_eur": "44.99",
+        }
+    ]
+
+
+def test_catalog_search_converts_eur_budget_to_public_cache_bgn(monkeypatch) -> None:
+    calls: list[str] = []
+    public_tools._CATALOG_INDEX_CACHE["items"] = None
+    public_tools._CATALOG_INDEX_CACHE["expires_at"] = 0
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        calls.append(url)
+        return {
+            "data": [
+                {"id": 1, "title": "Масаж", "price": "100", "location": "София"},
+                {
+                    "id": 2,
+                    "title": "SPA",
+                    "price": "186",
+                    "oldPrice": "220",
+                    "rating": "4.9",
+                    "ratingCount": "27",
+                    "ordersCount": "105",
+                    "location": "София",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_catalog_search(
+        query="масаж София",
+        min_price_eur=80,
+        max_price_eur=100,
+        limit=1,
+    )
+
+    assert result["status"] == "ok"
+    assert result["count"] == 1
+    assert "search=%D0%BC%D0%B0%D1%81%D0%B0%D0%B6%20%D0%A1%D0%BE%D1%84%D0%B8%D1%8F" in calls[0]
+    assert "minPrice=156" in calls[0]
+    assert "maxPrice=196" in calls[0]
+    assert result["items"][0]["title"] == "SPA"
+    assert result["items"][0]["price_eur"] == "95.10"
+    assert result["items"][0]["old_price_eur"] == "112.48"
+    assert result["items"][0]["rating"] == "4.90"
+    assert result["items"][0]["rating_count"] == 27
+    assert result["items"][0]["orders_count"] == 105
+    assert result["items"][0]["is_on_offer"] is True
+
+
+def test_catalog_search_falls_back_to_daily_index_and_reranks(monkeypatch) -> None:
+    calls: list[str] = []
+    public_tools._CATALOG_INDEX_CACHE["items"] = None
+    public_tools._CATALOG_INDEX_CACHE["expires_at"] = 0
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        calls.append(url)
+        if url.endswith("search="):
+            return {
+                "data": [
+                    {
+                        "id": 1,
+                        "name": "Йога клас с малки кученца в София",
+                        "price": "45",
+                        "slug": "приключения-с-домашни-любимци/йога-клас-с-малки-кученца-софия",
+                        "locationName": "София",
+                    },
+                    {
+                        "id": 2,
+                        "name": "Уелнес ритуал за двама: Сауна и масаж",
+                        "price": "195.583",
+                        "slug": "релакс-зона/сауна-и-масаж-за-двама",
+                        "locationName": "София",
+                    },
+                    {
+                        "id": 3,
+                        "name": "Кралски синхронен масаж за двойки или приятели",
+                        "price": "130",
+                        "slug": "масажи/кралски-синхронен-масаж-за-двойки-или-приятели",
+                        "locationName": "София",
+                    },
+                    {
+                        "id": 4,
+                        "name": "Какаов синхронен масаж за двама – гръб или цяло тяло",
+                        "price": "120",
+                        "slug": "масажи/какаов-синхронен-масаж-за-двама-цяло-тяло",
+                        "locationName": "София",
+                    },
+                    {
+                        "id": 5,
+                        "name": "Сладкарски курс за Италиански десерти",
+                        "price": "115.39",
+                        "slug": "сладкарски-курс/италиански-десерти",
+                        "locationName": "София-град",
+                    },
+                ]
+            }
+        return {"data": []}
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_catalog_search(
+        query="Търся масаж за двама в София до 100 евро.",
+        limit=3,
+    )
+
+    assert result["status"] == "ok"
+    assert result["filters"]["max_price_eur"] == 100.0
+    assert result["filters"]["inferred_from_query"]["max_price_eur"] is True
+    assert len(calls) == 2
+    assert calls[1].endswith("search=")
+    assert [item["title"] for item in result["items"]] == [
+        "Уелнес ритуал за двама: Сауна и масаж",
+        "Кралски синхронен масаж за двойки или приятели",
+        "Какаов синхронен масаж за двама – гръб или цяло тяло",
+    ]
+    assert all("/подарък/" in item["public_url"] for item in result["items"])
+
+
+def test_catalog_search_keeps_negated_terms_as_evidence_for_hermes(monkeypatch) -> None:
+    public_tools._CATALOG_INDEX_CACHE["items"] = None
+    public_tools._CATALOG_INDEX_CACHE["expires_at"] = 0
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        if "скок" in url or url.endswith("search="):
+            return {
+                "data": [
+                    {
+                        "id": 10,
+                        "name": "Самостоятелен бънджи скок от балон - Проходна",
+                        "price": "136.91",
+                        "slug": "скок-с-бънджи/от-балон-за-един-проходна",
+                        "locationName": "Проходна",
+                    },
+                    {
+                        "id": 11,
+                        "name": "Тандемен бънджи скок от балон - Проходна",
+                        "price": "234.70",
+                        "slug": "скок-с-бънджи/на-проходна-от-балон-в-тандем",
+                        "locationName": "Проходна",
+                    },
+                    {
+                        "id": 1,
+                        "name": "Тандемен скок с парашут от 3000 м – София",
+                        "price": "389.21",
+                        "slug": "тандем-скок-с-парашут/тандемен-скок-с-парашут-софия",
+                        "locationName": "Сапарева баня",
+                    },
+                    {
+                        "id": 2,
+                        "name": "Тандемен скок с парашут - София",
+                        "price": "449",
+                        "slug": "тандем-скок-с-парашут/скок-с-парашут-софия",
+                        "locationName": "Сапарева баня",
+                    },
+                    {
+                        "id": 3,
+                        "name": "Любов на висота: 2 тандемни скока с парашут - София",
+                        "price": "760.75",
+                        "slug": "тандем-скок-с-парашут/любов-на-висота-2-скока-с-парашут",
+                        "locationName": "Сапарева баня",
+                    },
+                ]
+            }
+        return {"data": []}
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_catalog_search(
+        query="Не, държа да е точно скок с парашут, не балон или друго летене.",
+        limit=3,
+    )
+
+    assert result["count"] == 3
+    assert "балон" in public_tools._query_evidence(
+        "Не, държа да е точно скок с парашут, не балон или друго летене."
+    ).tokens
+    assert result["query_evidence"]["reasoning_owner"] == "hermes"
+
+
+def test_catalog_search_returns_evidence_metadata_without_recipient_policy(monkeypatch) -> None:
+    public_tools._CATALOG_INDEX_CACHE["items"] = None
+    public_tools._CATALOG_INDEX_CACHE["expires_at"] = 0
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        if url.endswith("search="):
+            return {
+                "data": [
+                    {
+                        "id": 9,
+                        "name": "Вино и СПА пакет Стандарт за двама",
+                        "price": "255",
+                        "slug": "винен-туризъм/вино-и-спа-пакет-стандарт-за-двама",
+                        "locationName": "Могилово",
+                        "locationArea": "Stara Zagora",
+                    },
+                    {
+                        "id": 10,
+                        "name": "Флотация и релаксиращ масаж",
+                        "price": "225",
+                        "slug": "флотация/флотация-масаж-бургас",
+                        "locationName": "Бургас",
+                        "locationArea": "Burgas",
+                    },
+                    {
+                        "id": 11,
+                        "name": "Петзвезден делничен СПА релакс за двама",
+                        "price": "289.50",
+                        "slug": "спа-и-релакс/petzvezden-spa-relaks-za-dvama-v-dianamar",
+                        "locationName": "Павел баня",
+                        "locationArea": "Stara Zagora",
+                    },
+                    {
+                        "id": 12,
+                        "name": "Квилинг брънч: хартиено изкуство, създадено от Вашите ръце",
+                        "price": "140",
+                        "slug": "творчески-подаръци/квилинг-брънч",
+                        "locationName": "София",
+                        "locationArea": "Sofia City Province",
+                    },
+                    {
+                        "id": 13,
+                        "name": "Романтика за двама: делнична почивка с вино и плодове",
+                        "price": "166",
+                        "slug": "романтика-за-двама/делнична-почивка-с-вино-и-плодове",
+                        "locationName": "Сърница",
+                        "locationArea": "Pazardzhik Province",
+                    },
+                ]
+            }
+        return {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "Панорамен полет с парапланер в Сопот",
+                    "price": "127.13",
+                    "slug": "полет-с-парапланер/панорамен-полет-с-парапланер-на-сопот-с-пещана",
+                    "locationName": "Сопот",
+                    "locationArea": "Plovdiv Province",
+                },
+                {
+                    "id": 2,
+                    "name": "Панорамен полет с парапланер – Сопот или София",
+                    "price": "127.13",
+                    "slug": "полет-с-парапланер/сопот-полет-с-парапланер-с-пилот-гущера",
+                    "locationName": "Сопот",
+                    "locationArea": "Plovdiv Province",
+                },
+                {
+                    "id": 3,
+                    "name": "Нощувка и преживяване за двама в района на Пловдив",
+                    "price": "262.08",
+                    "slug": "приключенска-почивка/нощувка-и-преживяване-за-двама-2",
+                    "locationName": "Пловдив",
+                    "locationArea": "Plovdiv Province",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_catalog_search(
+        query=(
+            "Подаръкът е за близка приятелка от Сливен. "
+            "Тя е спокоен и позитивен човек, 50+."
+        ),
+        limit=5,
+    )
+
+    assert "recipient_context" not in result
+    assert result["query_evidence"]["requested_location"] == "сливен"
+    assert result["query_evidence"]["reasoning_owner"] == "hermes"
+    assert result["location_context"]["requested_location"] == "сливен"
+    assert result["location_context"]["reasoning_owner"] == "hermes"
+    assert result["location_context"]["nearest_returned_items"]
+    assert result["location_context"]["nearest_returned_items"][0]["distance_from_requested_location_km"] is not None
+    assert result["value_voucher_option"]["public_url"] == (
+        "https://skyvision.bg/подарък/ваучер-за-подарък-на-стойност/"
+    )
+    assert "не изписва конкретна услуга" in result["value_voucher_option"]["important_note"]
+    assert result["value_voucher_option"]["availability"] == "public_universal_gift_option"
+    assert "answer_guidance" not in result["value_voucher_option"]
+    assert all(item["category_key"] for item in result["items"])
+    assert any(item["distance_from_requested_location_km"] is not None for item in result["items"])
+
+
+def test_catalog_search_exposes_diverse_items_without_pruning_ranked_evidence(monkeypatch) -> None:
+    public_tools._CATALOG_INDEX_CACHE["items"] = None
+    public_tools._CATALOG_INDEX_CACHE["expires_at"] = 0
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        if url.endswith("search="):
+            return {"data": []}
+        return {
+            "data": [
+                {
+                    "id": 1,
+                    "name": "Два дни с каяк на яз. Александър Стамболийски",
+                    "price": "176",
+                    "slug": "каяк/два-дни-с-каяк-яз-александър-стамболийски",
+                    "locationName": "с. Горско Косово",
+                },
+                {
+                    "id": 2,
+                    "name": "Два дни с каяк по Дунав от Никопол до Свищов",
+                    "price": "176",
+                    "slug": "каяк/два-дни-с-каяк-дунав-никопол-свищов",
+                    "locationName": "Свищов",
+                },
+                {
+                    "id": 3,
+                    "name": "Два дни с каяк по Дунав и Янтра",
+                    "price": "176",
+                    "slug": "каяк/два-дни-с-каяк-дунав-янтра",
+                    "locationName": "с. Вардим",
+                },
+                {
+                    "id": 4,
+                    "name": "Два дни ледено катерене на водопад",
+                    "price": "285",
+                    "slug": "ледено-катерене/два-дни-ледено-катерене",
+                    "locationName": "гара Бов",
+                },
+                {
+                    "id": 5,
+                    "name": "Два дни СПА почивка за двама",
+                    "price": "260",
+                    "slug": "спа-и-релакс/два-дни-спа-почивка-за-двама",
+                    "locationName": "Велинград",
+                },
+            ]
+        }
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_catalog_search(
+        query="Искам да поръчаме един билет за два дни",
+        limit=5,
+    )
+
+    assert result["count"] == 5
+    assert [item["category_key"] for item in result["items"][:3]] == ["каяк", "каяк", "каяк"]
+    selection_context = result["selection_context"]
+    assert selection_context["reasoning_owner"] == "hermes"
+    assert "not a mandatory final-answer order" in selection_context["ranked_items_contract"]
+    assert selection_context["repeated_categories"][0]["category_key"] == "каяк"
+    assert selection_context["repeated_categories"][0]["count"] == 3
+    diverse_items = selection_context["diverse_items"]
+    assert [item["category_key"] for item in diverse_items[:3]] == [
+        "каяк",
+        "ледено катерене",
+        "спа и релакс",
+    ]
+    assert {item["title"] for item in diverse_items} == {item["title"] for item in result["items"]}
+
+
+def test_catalog_search_does_not_prune_far_or_childlike_options_in_backend(monkeypatch) -> None:
+    public_tools._CATALOG_INDEX_CACHE["items"] = None
+    public_tools._CATALOG_INDEX_CACHE["expires_at"] = 0
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        if url.endswith("search="):
+            return {
+                "data": [
+                    {
+                        "id": 1,
+                        "name": "СПА уикенд край Сливен",
+                        "price": "260",
+                        "slug": "спа-и-релакс/spa-uikend-sliven",
+                        "locationName": "Сливен",
+                    },
+                    {
+                        "id": 2,
+                        "name": "Винен релакс в Стара Загора",
+                        "price": "180",
+                        "slug": "винени-турове-дегустации/vinen-relaks-stara-zagora",
+                        "locationName": "Стара Загора",
+                    },
+                    {
+                        "id": 3,
+                        "name": "Флотация и релаксиращ масаж в Бургас",
+                        "price": "190",
+                        "slug": "флотация/flotacia-masaj-burgas",
+                        "locationName": "Бургас",
+                    },
+                    {
+                        "id": 4,
+                        "name": "Луксозен СПА ритуал в Сърница",
+                        "price": "160",
+                        "slug": "спа-и-релакс/luksozen-spa-ritual-sarnitsa",
+                        "locationName": "Сърница",
+                    },
+                    {
+                        "id": 5,
+                        "name": "Детско-юношеско офроуд училище край Сливен",
+                        "price": "90",
+                        "slug": "шофиране-за-деца/detsko-yunoshesko-ofroud-uchilishte",
+                        "locationName": "Сливен",
+                    },
+                ]
+            }
+        return {"data": []}
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_catalog_search(
+        query=(
+            "Моля за помощ. Близка приятелка има рожден ден. "
+            "Подаръкът да е красив. Тя е спокоен и позитивен човек, 50+, от Сливен."
+        ),
+        limit=5,
+    )
+
+    titles = [item["title"] for item in result["items"]]
+    assert "Луксозен СПА ритуал в Сърница" in titles
+    assert "Детско-юношеско офроуд училище край Сливен" in titles
+    assert "recipient_context" not in result
+    assert result["location_context"]["returned_distance_km_values"]
+
+
+def test_campaign_knowledge_returns_public_sales_and_terms_facts() -> None:
+    result = public_tools.handle_skyai_campaign_knowledge(
+        topic="Клиент пита дали бонусният полет може да е за подарения човек",
+        include_terms=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["tool_contract"]["purpose"] == "public_facts_only"
+    assert result["tool_contract"]["reasoning_owner"] == "hermes"
+    assert "готови customer-visible реплики" in result["tool_contract"]["notes"]
+    campaign = result["active_campaigns"][0]
+    assert campaign["public_url"] == "https://skyvision.bg/campaign/free-panoramic-flight/"
+    assert "panel.skyvision.bg/kampaniya-bezplaten-polet-nad-moreto" in campaign["terms_url"]
+    assert "човека, който купува или резервира" in campaign["customer_summary"]
+    assert "SkyVision е създаден през 2007 от Емил и Малина." in campaign["brand_story_facts"]
+    assert "Летенето остава част от ДНК-то на бранда." in campaign["brand_story_facts"]
+    assert any("Емил и Малина все още лично летят" in fact for fact in campaign["brand_story_facts"])
+    assert campaign["bonus_owner"]["default"].startswith("човекът")
+    assert campaign["bonus_owner"]["is_automatic_for_voucher_recipient"] is False
+    assert campaign["bonus_owner"]["transfer_is_manual_exception"] is True
+    assert campaign["bonus_owner"]["customer_can_self_transfer"] is False
+    assert "акаунта, имейла и данните" in campaign["bonus_owner"]["default_use_scope"]
+    assert campaign["bonus_owner"]["manual_exception_approver"] == "Емил Ломлиев"
+    assert campaign["campaign_2026_facts"]["public_page"] == "https://skyvision.bg/campaign/free-panoramic-flight/"
+    assert campaign["campaign_2026_facts"]["archive_2025_url"] == (
+        "https://skyvision.bg/campaign/free-panoramic-flight-2025/"
+    )
+    assert campaign["campaign_2026_facts"]["validity"] == "12 месеца от датата на покупката"
+    assert "независимо къде се изпълнява основната" in (
+        campaign["campaign_2026_facts"]["main_service_location_independent"]
+    )
+    assert "единствено от летище Приморско" in campaign["campaign_2026_facts"]["bonus_execution_location"]
+    assert "основната услуга и бонусният полет са различни преживявания" in (
+        campaign["campaign_2026_facts"]["location_confusion_answer"]
+    )
+    gift_linking = campaign["campaign_2026_facts"]["gift_entitlement_profile_linking"]
+    assert gift_linking["has_voucher_or_serial_number"] is False
+    assert gift_linking["manual_add_by_customer"] is False
+    assert gift_linking["customer_can_self_transfer"] is False
+    assert "автоматично в профила" in gift_linking["logged_in_order"]
+    assert "имейла от поръчката" in gift_linking["guest_or_no_profile_order"]
+    assert "същия имейл" in gift_linking["later_profile_with_same_email"]
+    assert "не се добавя ръчно" in gift_linking["missing_entitlement_resolution"]
+    assert "без предварително купуване на ваучер" in campaign["booknow_nuance"]
+    assert "парите ще бъдат възстановени" in campaign["booknow_nuance"]
+    assert campaign["bonus_product"]["product_id"] == 95435
+    assert campaign["bonus_product"]["availability_tool"] == "skyai_product_slots"
+    assert campaign["bonus_product"]["availability_facts"]["slots_tool_product_id"] == 95435
+    assert campaign["bonus_product"]["public_url"] == (
+        "https://skyvision.bg/подарък/полет-с-жирокоптер/панорамен-полет-над-морето/"
+    )
+    assert campaign["bonus_product"]["duration"] == "10 мин."
+    assert campaign["bonus_product"]["location"] == "Летище Приморско"
+    assert "винаги се изпълнява от летище Приморско" in campaign["bonus_product"]["location_note"]
+    assert "клиентът пита" in result["founder_transfer_facts"]["context"]
+    founder_facts = result["founder_transfer_facts"]["facts"]
+    assert founder_facts["default_owner"].startswith("купувачът")
+    assert "акаунта/имейла/данните" in founder_facts["default_rule"]
+    assert founder_facts["founder_name"] == "Емил Ломлиев"
+    assert founder_facts["cofounder_name"] == "Малина Ломлиева"
+    assert "през 2007 г." in founder_facts["founding_story"]
+    assert "над 1000 преживявания" in founder_facts["platform_scale"]
+    assert "все още лично летят" in founder_facts["personal_flight_fact"]
+    assert "пилот-инструктор" in founder_facts["founder_role"]
+    assert "лично одобрение" in founder_facts["recipient_transfer"]
+    assert "public_founder_contact" in founder_facts["recipient_transfer_approval"]
+    assert result["founder_transfer_facts"]["public_founder_contact"] == "+359 886 417 142"
+
+
+def test_support_knowledge_returns_public_commerce_and_voucher_facts() -> None:
+    result = public_tools.handle_skyai_support_knowledge(
+        topic="Клиент пита как да напише пожелание, как се доставя и как да удължи ваучер",
+        include_contacts=True,
+    )
+
+    assert result["status"] == "ok"
+    assert result["source"] == "skyvision_curated_public_support_knowledge"
+    assert "Честитка" in result["gift_voucher_presentation"]["voucher_blanks"]
+    assert "Редактирай поздрава" in " ".join(result["gift_voucher_presentation"]["wish_flow"])
+    assert "Име на ползвател" not in " ".join(result["gift_voucher_presentation"]["wish_flow"])
+    assert result["gift_voucher_presentation"]["packaging_options"] == [
+        {
+            "name": "Безплатна опаковка",
+            "price_eur": "0.00",
+            "price_bgn": "0.00",
+            "note": "универсална подаръчна опаковка",
+        },
+        {
+            "name": "Син плик „Лукс“",
+            "price_eur": "2.00",
+            "price_bgn": "3.91",
+            "note": "класическият SkyVision син плик с червен восъчен печат; разпознаваем премиум вариант",
+        },
+        {
+            "name": "Плик с кауза „Пингвин“",
+            "price_eur": "5.00",
+            "price_bgn": "9.78",
+            "note": "подаръчен плик с кауза",
+        },
+        {
+            "name": "Електронен ваучер",
+            "price_eur": "0.00",
+            "price_bgn": "0.00",
+            "note": "най-бързият вариант, когато подаръкът трябва да се изпрати веднага онлайн",
+        },
+    ]
+    serialized = str(result["gift_voucher_presentation"])
+    assert "физическа опаковка" not in serialized
+    assert "червен восъчен печат" in serialized
+    assert result["delivery"]["courier"] == "Speedy"
+    assert result["delivery"]["current_fee"] == "безплатна доставка"
+    assert result["delivery"]["office_locator_url"] == "https://www.speedy.bg/bg/speedy-offices-automats"
+    assert "15:00" in result["delivery"]["dispatch_cutoff"]
+    assert "Speedy локатора" in result["delivery"]["speedy_working_hours_fact"]
+    assert "EUR е основната цена" in result["gift_voucher_presentation"]["display_facts"]["price_display"]
+    assert result["payment_methods"]["online_checkout_options"] == ["Карта", "EasyPay", "Наложен платеж"]
+    assert result["payment_methods"]["cash_on_delivery"]["not_for"] == (
+        "електронен ваучер и директна BookNow резервация"
+    )
+    assert result["payment_methods"]["bank_transfer"]["available_in_online_checkout"] is False
+    assert result["payment_methods"]["bank_transfer"]["online_checkout_label"] is None
+    assert "до 5 дни" in result["order_and_invoice_support"]["invoice_self_service"]
+    assert "потвърдителния имейл" in result["order_and_invoice_support"]["invoice_self_service"]
+    assert "15:00" in result["order_and_invoice_support"]["next_day_delivery_fact"]
+    assert "изтекъл" in result["reservation_support"]["expired_response_deadline"]
+    assert "удължаване" in " ".join(result["vouchers"]["extension_steps"])
+    assert "ако системата я показва" not in " ".join(result["vouchers"]["extension_steps"])
+    assert "изтрие ваучера" in result["vouchers"]["manual_extension_refresh"]
+    assert "добави отново" in result["vouchers"]["manual_extension_refresh"]
+    assert "друг потребител" in result["vouchers"]["ownership_conflict"]
+    issuer_scope = result["vouchers"]["issuer_scope"]
+    assert issuer_scope["skyvision_issued_vouchers"] == {
+        "profile_compatible": True,
+        "service_authority": "SkyVision",
+    }
+    assert issuer_scope["externally_issued_vouchers"]["profile_compatible"] is False
+    assert "издал ваучера" in issuer_scope["externally_issued_vouchers"]["service_authority"]
+    assert issuer_scope["catalog_overlap_changes_issuer_or_compatibility"] is False
+    assert issuer_scope["compatibility_is_issuer_scoped"] is True
+    panel = result["vouchers"]["customer_panel"]
+    assert panel["scope"] == "Процесът в SkyVision профила е за ваучери, издадени от SkyVision."
+    assert panel["main_area"] == "Профил -> Ваучери / Моите ваучери"
+    assert panel["left_navigation"] == ["Ваучери", "Резервации", "Запитвания", "Поръчки", "Настройки", "Изход"]
+    assert "Чакащо запитване" in panel["voucher_filters"]
+    assert "Добави ваучер" in panel["empty_state"]
+    assert "серийния номер на ваучера на латиница" in " ".join(panel["add_voucher_flow"])
+    assert panel["add_voucher_flow"][0].startswith("За ваучер, издаден от SkyVision")
+    assert panel["voucher_list_columns"] == ["Услуга", "Ваучер", "Депозит", "Статус", "Валидност", "Действия"]
+    assert "„Използвай“" in " ".join(panel["common_actions"])
+    assert panel["customer_remains_actor"] is True
+    assert "не иска пълен код" in panel["chat_privacy_note"]
+    campaign_gifts = result["vouchers"]["campaign_gifts"]
+    assert "нямат ваучерен/сериен номер" in campaign_gifts["not_regular_vouchers"]
+    assert campaign_gifts["manual_add_available"] is False
+    assert "автоматично в профила" in campaign_gifts["profile_linking"]["logged_in_order"]
+    assert "имейла от поръчката" in campaign_gifts["profile_linking"]["guest_or_no_profile_order"]
+    assert "същия имейл" in campaign_gifts["profile_linking"]["later_profile_with_same_email"]
+    assert "не го карай да въвежда сериен номер" in campaign_gifts["customer_next_step"]
+    assert result["vouchers"]["profile_extension_available"] is True
+    assert "остатъчен ваучер" in result["vouchers"]["residual_voucher"]["automatic_issue"]
+    assert result["vouchers"]["residual_voucher"]["email_subject"] == "Издаване на остатък за ваучер от SkyVision"
+    assert result["vouchers"]["merge_two_vouchers_into_one"]["self_service_available"] is False
+    assert result["vouchers"]["merge_two_vouchers_into_one"]["handling"] == "ръчна обработка"
+    assert "ръчна" in result["vouchers"]["merge_two_vouchers_into_one"]["handling"]
+    assert "1 месец" in result["vouchers"]["merge_two_vouchers_into_one"]["result"]
+    assert "грешна опция" in result["vouchers"]["wrong_reservation_or_split_residual_repair"]
+    assert "Сторно/рефънд" in result["vouchers"]["refund_and_cancellation"]
+    email_learning = result["email_case_learning"]
+    assert email_learning["source"] == "customer_safe_email_case_learning_2025-07-07_to_2026-07-07"
+    assert email_learning["scale"]["human_operational_case_records"] == 6979
+    assert email_learning["scale"]["grouped_cases"] == 3099
+    assert email_learning["privacy"].startswith("Обобщено обучение")
+    learned_intents = {item["intent"] for item in email_learning["frequent_customer_intents"]}
+    assert learned_intents == {
+        "checkout_payment_problem",
+        "courier_delivery_details",
+        "post_experience_media",
+        "provider_unreachable",
+        "refund_cancellation_return",
+        "reservation_status",
+        "voucher_help",
+    }
+    refund_intent = next(
+        item for item in email_learning["frequent_customer_intents"] if item["intent"] == "refund_cancellation_return"
+    )
+    assert "минимален контекст" in refund_intent["support_posture"]
+    assert "има/няма резервация" in email_learning["state_reasoning"][0]
+    assert "пълен ваучерен код" in email_learning["operator_handoff"]["do_not_request_in_public_chat"]
+    assert "номер на ваучер или поръчка" in email_learning["operator_handoff"]["minimum_safe_identifier"]
+    assert result["official_contacts"]["contacts_page"] == "https://skyvision.bg/контакти/"
+    assert result["official_contacts"]["email"] == "info@skyvision.bg"
+    assert "+359 (0) 700 20 200" in result["official_contacts"]["phones"]
+
+
+def test_product_slots_compacts_fixed_slots_and_marks_fixed_mode(monkeypatch) -> None:
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        return {
+            "fixedSlots": [
+                {
+                    "id": 1,
+                    "start": "2026-07-06T05:00:00.000000Z",
+                    "end": "2026-07-06T05:40:00.000000Z",
+                    "slots": [
+                        {
+                            "id": 10,
+                            "status": "free",
+                            "start": "2026-07-06T05:00:00.000000Z",
+                            "end": "2026-07-06T05:40:00.000000Z",
+                        }
+                    ],
+                }
+            ],
+            "requestSlots": [{"start": "2026-07-06T08:00:00", "end": "2026-07-06T08:40:00"}],
+            "workingPeriods": [],
+        }
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+
+    result = public_tools.handle_skyai_product_slots(
+        product_id=10536,
+        start_date="2026-07-03",
+        end_date="2026-07-17",
+    )
+
+    assert result["status"] == "ok"
+    assert result["availability_mode"] == "fixed_slots_available_direct_booking"
+    assert result["fixed_slots"][0]["free_slots_count"] == 1
+    assert result["fixed_slots"][0]["first_free_slot"]["id"] == 10
+
+
+def test_event_log_append_rejects_sensitive_payload(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SKYAI_V2_EVENT_LOG_PATH", str(tmp_path / "events.jsonl"))
+
+    result = public_tools.handle_skyai_event_log_append(
+        event_type="chat_message_customer",
+        properties={"email": "client@example.com"},
+    )
+
+    assert result["status"] == "blocked"
+    assert result["written"] is False
+    assert not (tmp_path / "events.jsonl").exists()
+
+
+def test_event_log_append_writes_sanitized_append_only_record(monkeypatch, tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    monkeypatch.setenv("SKYAI_V2_EVENT_LOG_PATH", str(path))
+
+    result = public_tools.handle_skyai_event_log_append(
+        event_type="product_recommended",
+        anonymous_id="anon-1",
+        conversation_id="conversation-1",
+        properties={"product_id": 10536, "surface": "canary"},
+    )
+
+    assert result["status"] == "ok"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["event_type"] == "product_recommended"
+    assert record["anonymous_id_hash"]
+    assert record["conversation_id_hash"]
+    assert record["properties"] == {"product_id": 10536, "surface": "canary"}
