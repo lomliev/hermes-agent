@@ -209,6 +209,40 @@ def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, A
             issues.append("missing_customer_reply_email")
         if "reservations@skyvision.bg" in reply:
             issues.append("presents_automated_address_to_customer")
+    elif scenario_id == "reservation_voucher_path_ambiguity":
+        mentions_direct_booknow = _has_any(reply, ("booknow", "резервирай"))
+        mentions_card_payment = _has_any(reply, ("плати с карта", "плащане с карта", "карта"))
+        mentions_existing_voucher = _has_any(
+            reply,
+            ("моят ваучер", "моя ваучер", "моите ваучери", "профил", "добави ваучер"),
+        )
+        mentions_product_voucher_option = _has_any(
+            reply,
+            ("имам ваучер", "с ваучер", "опция за ваучер", "използвай ваучер"),
+        )
+        clarifies_path = _has_any(
+            reply,
+            ("имаш ли ваучер", "ако имаш ваучер", "ползваш ли ваучер", "без ваучер"),
+        )
+        if mentions_direct_booknow and mentions_card_payment and not (mentions_existing_voucher or clarifies_path):
+            issues.append("assumes_direct_booknow_card_payment")
+        if not (mentions_existing_voucher or clarifies_path):
+            issues.append("missing_existing_voucher_path")
+        if not (mentions_product_voucher_option or clarifies_path):
+            issues.append("missing_product_voucher_reservation_option")
+        if _has_any(
+            reply,
+            (
+                "маркирай участниц",
+                "избери участниц",
+                "инструкторът ще се свърже",
+                "до 24 часа",
+                "реално време",
+                "свободен слот",
+                "свободни слотове",
+            ),
+        ):
+            issues.append("asserts_unsupported_booking_operations")
     elif scenario_id == "campaign_gift_time_validity":
         distinguishes_dates = (
             _has_any(reply, ("получ", "подар"))
