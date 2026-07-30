@@ -221,8 +221,31 @@ def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, A
     elif scenario_id == "gift_wish_text":
         if "поздрав" not in reply:
             issues.append("missing_greeting_field")
-        if "редактирай поздрава" not in reply:
-            issues.append("missing_preview_update_action")
+        if not _has_any(reply, ("кошница", "количка")) or not _has_any(reply, ("молив", "иконката за редак", "редактирай бланка")) or "бланка" not in reply or "запази" not in reply:
+            issues.append("missing_cart_greeting_edit_flow")
+        if not _has_any(reply, ("booknow", "резервирай")) or not _has_any(
+            reply,
+            (
+                "не издава подаръчен ваучер",
+                "не е подаръчен ваучер",
+                "без подаръчен ваучер",
+                "директна резервация",
+            ),
+        ) or not _has_any(reply, ("няма персонализация на поздрав", "няма поздрав", "без поздрав")):
+            issues.append("missing_booknow_no_voucher_distinction")
+        if "редактирай поздрава" in reply and _has_any(
+            reply,
+            (
+                "за да се покаже",
+                "за да се появи",
+                "за да се обнови",
+                "за да обновиш",
+                "за да актуализираш",
+                "нужно е",
+                "трябва да натис",
+            ),
+        ):
+            issues.append("suggests_redaktirai_needed_for_greeting_preview")
         if _has_any(reply, ("само да не го объркаш", "име на ползвател")):
             issues.append("unnecessary_recipient_name_field_warning")
     elif scenario_id == "repeat_specific_parachute":
