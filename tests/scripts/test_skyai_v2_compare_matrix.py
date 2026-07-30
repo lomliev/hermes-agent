@@ -243,6 +243,50 @@ def test_evaluate_reservation_contact_rejects_automated_sender() -> None:
     ]
 
 
+def test_evaluate_reservation_voucher_path_rejects_direct_booknow_assumption() -> None:
+    scenario = {"id": "reservation_voucher_path_ambiguity"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Отвори продукта, избери Резервирай/BookNow, маркирай участниците, "
+                "избери свободен слот и плати с карта. Инструкторът ще се свърже "
+                "с теб до 24 часа."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result["issues"] == [
+        "assumes_direct_booknow_card_payment",
+        "missing_existing_voucher_path",
+        "missing_product_voucher_reservation_option",
+        "asserts_unsupported_booking_operations",
+    ]
+
+
+def test_evaluate_reservation_voucher_path_accepts_clarifying_branches() -> None:
+    scenario = {"id": "reservation_voucher_path_ambiguity"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Само да уточня: имаш ли ваучер, който искаш да използваш? "
+                "Ако имаш ваучер, влез в профил/Моите ваучери или избери опцията "
+                "Имам ваучер при резервацията на продукта. Ако си без ваучер, тогава "
+                "минаваш през Резервирай/BookNow и плащане с карта."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result == {"score": 100, "issues": []}
+
+
 def test_evaluate_campaign_gift_validity_rejects_time_inference_and_transfer_first() -> None:
     scenario = {"id": "campaign_gift_time_validity"}
 
