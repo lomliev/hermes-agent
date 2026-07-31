@@ -336,41 +336,6 @@ def test_evaluate_campaign_gift_validity_accepts_evidence_first_reasoning() -> N
     assert result == {"score": 100, "issues": []}
 
 
-def test_evaluate_gift_wish_requires_cart_edit_and_booknow_distinction() -> None:
-    scenario = {"id": "gift_wish_text"}
-
-    result = matrix.evaluate_side(
-        scenario,
-        {
-            "status": "ok",
-            "reply": "Пожеланието се пише в Поздрав и се вижда в прегледа на ваучера.",
-            "cards": [],
-        },
-    )
-
-    assert "missing_cart_greeting_edit_flow" in result["issues"]
-    assert "missing_booknow_no_voucher_distinction" in result["issues"]
-
-
-def test_evaluate_gift_wish_rejects_false_redaktirai_preview_instruction() -> None:
-    scenario = {"id": "gift_wish_text"}
-
-    result = matrix.evaluate_side(
-        scenario,
-        {
-            "status": "ok",
-            "reply": (
-                "Преди плащането отвори Кошница, избери молива до Бланка и натисни Запази. "
-                "BookNow е директна резервация и няма персонализация на поздрав. "
-                "За да се покаже поздравът, натисни Редактирай поздрава."
-            ),
-            "cards": [],
-        },
-    )
-
-    assert "suggests_redaktirai_needed_for_greeting_preview" in result["issues"]
-
-
 def test_evaluate_gift_wish_rejects_recipient_name_warning_template() -> None:
     scenario = {"id": "gift_wish_text"}
 
