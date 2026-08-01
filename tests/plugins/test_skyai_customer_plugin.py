@@ -714,6 +714,11 @@ def test_campaign_knowledge_returns_public_sales_and_terms_facts() -> None:
     assert "имейла от поръчката" in gift_linking["guest_or_no_profile_order"]
     assert "същия имейл" in gift_linking["later_profile_with_same_email"]
     assert "не се добавя ръчно" in gift_linking["missing_entitlement_resolution"]
+    redemption = campaign["gift_voucher_redemption"]
+    assert redemption["redemption_is_new_voucher_purchase"] is False
+    assert redemption["top_up_creates_new_campaign_bonus"] is False
+    assert redemption["top_up_changes_bonus_owner"] is False
+    assert "първоначалния ваучер" in redemption["original_purchase_bonus_link"]
     assert "без предварително купуване на ваучер" in campaign["booknow_nuance"]
     assert "парите ще бъдат възстановени" in campaign["booknow_nuance"]
     assert campaign["bonus_product"]["product_id"] == 95435

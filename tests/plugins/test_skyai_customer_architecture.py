@@ -32,7 +32,7 @@ def test_skyai_prompt_is_principle_based_not_script_pack() -> None:
 
     assert "Hermes мисли" in prompt
     assert "не е заповед какво да кажеш" in prompt
-    assert len(prompt) < 6000
+    assert len(prompt) < 7000
     assert "SkyAI sales playbook" not in prompt
     assert "do_not_say" not in prompt
     assert "customer_facing_flow" not in prompt
@@ -119,6 +119,49 @@ def test_campaign_gift_validity_is_general_evaluation_material() -> None:
     assert "no expiry claim without evidence" in scenario["focus"]
 
 
+def test_gift_voucher_top_up_does_not_create_campaign_bonus() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    campaign = public_tools.handle_skyai_campaign_knowledge()["active_campaigns"][0]
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "доплащането на разлика не са нова покупка на ваучер" in prompt
+    assert "не създават нов кампаниен бонус" in prompt
+    assert "профила или имейла на първоначалния купувач" in prompt
+
+    redemption = campaign["gift_voucher_redemption"]
+    assert redemption == {
+        "redemption_is_new_voucher_purchase": False,
+        "top_up_creates_new_campaign_bonus": False,
+        "top_up_changes_bonus_owner": False,
+        "original_purchase_bonus_link": (
+            "профилът или имейлът на човека, който е купил първоначалния ваучер"
+        ),
+    }
+
+    assert "Redeeming a gifted voucher and paying a price difference" in architecture
+    assert "does not create a new campaign bonus" in architecture
+    assert "original buyer" in architecture
+    assert "not a payment classifier or post-model correction" in architecture
+
+    principle = next(
+        case for case in principles if case["id"] == "gift_voucher_top_up_creates_no_bonus"
+    )
+    assert principle["source_threads"] == ["1533116834281160714"]
+    assert "not a new voucher purchase" in principle["principle"]
+    assert "creates no new campaign bonus" in principle["principle"]
+    assert "original buyer's profile or order email" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "gift_voucher_top_up_creates_no_bonus"
+    )
+    assert scenario["history"][0]["role"] == "user"
+    assert "доплатих разликата" in scenario["history"][0]["content"]
+    assert "creates no new campaign bonus" in scenario["focus"]
+    assert "do not introduce BookNow" in scenario["focus"]
+
+
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
@@ -157,7 +200,10 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
     principle = next(case for case in cases if case["id"] == "customer_reply_contact")
 
-    assert "Писмен контакт с екипа: info@skyvision.bg" in prompt
+    assert "Давай info@skyvision.bg само" in prompt
+    assert "поискан писмен контакт или конкретен заявен проблем/нужда" in prompt
+    assert "Не предполагай проблем" in prompt
+    assert "не добавяй контакт като стандартен финал" in prompt
     assert "reservations@skyvision.bg е автоматичен адрес" in prompt
     assert "не канал за клиентски отговори" in prompt
 
@@ -174,6 +220,24 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     assert "use info@skyvision.bg" in principle["principle"]
     assert "not a customer reply channel" in principle["principle"]
 
+    need_principle = next(
+        case for case in cases if case["id"] == "contact_only_for_real_unresolved_need"
+    )
+    assert need_principle["source_threads"] == [
+        "1533116834281160714",
+        "generalized_contact_overuse",
+    ]
+    assert "Do not append info@skyvision.bg as a standard closing" in need_principle["principle"]
+    assert "concrete unresolved problem or request" in need_principle["principle"]
+    assert "not a speculative assumption" in need_principle["principle"]
+
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+    scenario = next(
+        case for case in scenarios if case["id"] == "complete_answer_without_speculative_contact"
+    )
+    assert "do not invent a possible problem" in scenario["focus"]
+    assert "no unresolved issue or contact request" in scenario["focus"]
+
 
 def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
@@ -181,16 +245,25 @@ def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
     scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
 
-    assert "не е ясно дали има/ползва ваучер" in prompt
+    assert "Обичайната резервация в SkyVision е с ваучер" in prompt
+    assert "BookNow е рядко изключение" in prompt
+    assert "Не въвеждай и не питай за BookNow рутинно" in prompt
+    assert "сами не доказват BookNow" in prompt
+    assert "само ако клиентът го посочи" in prompt
+    assert "конкретно съмнение, което променя отговора" in prompt
+    assert "платежният път е съществено неясен" in prompt
     assert "Моят ваучер/профил" in prompt
-    assert "директен BookNow/карта само без ваучер" in prompt
+    assert "директна карта без ваучер" in prompt
     assert "Не твърди задължителни UI стъпки" in prompt
     assert "tool/public evidence" in prompt
-    assert len(prompt) < 6000
+    assert len(prompt) < 7000
 
     assert "Reservation path ambiguity is Hermes reasoning context" in architecture
     assert "not a runtime intent router" in architecture
-    assert "direct BookNow/card payment only when no voucher is being used" in architecture
+    assert "ordinary SkyVision reservation uses a voucher" in architecture
+    assert "BookNow/card payment without a prior voucher is a rare exception" in architecture
+    assert "date/time, payment, top-up, or confirmed reservation" in architecture
+    assert "does not by itself prove BookNow" in architecture
     assert "without bounded public facts or tool evidence" in architecture
 
     principle = next(case for case in cases if case["id"] == "reservation_voucher_path_ambiguity")
@@ -204,6 +277,21 @@ def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     scenario = next(case for case in scenarios if case["id"] == "reservation_voucher_path_ambiguity")
     assert "voucher/payment path is unknown" in scenario["focus"]
     assert "do not assume direct BookNow/card payment" in scenario["focus"]
+
+    rare_principle = next(case for case in cases if case["id"] == "booknow_is_rare_not_default")
+    assert rare_principle["source_threads"] == ["1533116834281160714"]
+    assert "ordinary SkyVision reservation as voucher-based context" in rare_principle["principle"]
+    assert "BookNow as a rare direct-card exception" in rare_principle["principle"]
+    assert "does not by itself establish BookNow" in rare_principle["principle"]
+    assert "concrete ambiguity materially changes the answer" in rare_principle["principle"]
+
+    date_scenario = next(
+        case for case in scenarios if case["id"] == "reservation_date_does_not_prove_booknow"
+    )
+    assert date_scenario["history"][0]["role"] == "user"
+    assert "подарен ваучер" in date_scenario["history"][0]["content"]
+    assert "do not prove rare BookNow" in date_scenario["focus"]
+    assert "no routine BookNow question" in date_scenario["focus"]
 
 
 def test_confirmed_reservation_self_cancellation_is_general_principle() -> None:
@@ -354,6 +442,9 @@ def test_qa_feedback_is_evaluation_material_not_runtime_policy() -> None:
         "session_context_concision",
         "voucher_issuer_boundary",
         "customer_reply_contact",
+        "booknow_is_rare_not_default",
+        "gift_voucher_top_up_creates_no_bonus",
+        "contact_only_for_real_unresolved_need",
     }
     assert all("principle" in case for case in cases)
     assert all("scoring" in case for case in cases)

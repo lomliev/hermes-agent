@@ -77,6 +77,15 @@ Current line:
   structured field has precedence over product prose; missing/fetch-failed
   detail stays unverified. No universal cancellation-hour constant, classifier,
   router, or customer-answer template is added.
+- `v2.10` - reservation-path and escalation judgment: ordinary reservations
+  default to the voucher context, while rare BookNow is used only when explicit
+  or clearly evidenced; date/time, payment, top-up, or confirmation alone do
+  not prove it. Redeeming a gifted voucher and paying a difference creates no
+  new campaign bonus, which remains linked to the original buyer. Hermes gives
+  `info@skyvision.bg` only for requested contact or a reported unresolved case
+  requiring human action, never as a speculative standard closing. These are
+  prompt, public-facts, and evaluation principles without keyword routing or
+  answer post-processing.
 
 ## Canonical Source
 

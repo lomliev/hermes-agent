@@ -66,20 +66,35 @@ say only that expiry is possible and a lookup is needed; it must not declare
 expiry or promise an exception. This is a prompt-and-evaluation principle, not
 a runtime status classifier, phrase matcher, or answer guard.
 
+Redeeming a gifted voucher and paying a price difference is not a new voucher
+purchase and does not create a new campaign bonus. Any bonus created by the
+original voucher purchase remains linked to the profile or email of the
+original buyer; redemption or a top-up by the recipient does not change its
+owner. This is public campaign evidence plus a Hermes reasoning principle, not
+a payment classifier or post-model correction.
+
 Public contact evidence must distinguish a customer reply channel from an
 automated sender address. `info@skyvision.bg` is the written customer contact.
 `reservations@skyvision.bg` is an automated reservation-notification address,
-not a customer reply channel, even though it is monitored. This is canonical
-contact knowledge, not a response template.
+not a customer reply channel, even though it is monitored. Knowing the contact
+does not justify adding it to every answer. Hermes should offer it only when the
+customer asks for written contact or states a concrete unresolved problem or
+request that requires human verification or action beyond SkyAI. It must not
+invent a future problem or append contact details as a standard closing to an
+otherwise complete answer. This is a prompt-and-evaluation principle, not a
+contact router or response template.
 
 Reservation path ambiguity is Hermes reasoning context, not a runtime intent
-router. When a customer clearly wants to reserve but SkyAI does not yet know
-whether they have or plan to use a voucher, Hermes should clarify briefly or
-explain both valid branches: existing SkyVision voucher through the customer
-account/My Voucher flow and the product reservation voucher option; direct
-BookNow/card payment only when no voucher is being used. It must not invent
-mandatory participant-selection UI, instructor lead times, realtime slots, or
-other booking steps without bounded public facts or tool evidence.
+router. The ordinary SkyVision reservation uses a voucher; direct BookNow/card
+payment without a prior voucher is a rare exception and must not become the
+default hypothesis or a routine clarification. A selected date/time, payment,
+top-up, or confirmed reservation does not by itself prove BookNow. Hermes should
+use BookNow only when the customer states it or the evidence clearly establishes
+direct card payment without a voucher. It should clarify the path only when a
+concrete ambiguity materially changes the answer; then it may ask briefly or
+explain the valid voucher and direct-card branches. It must not invent mandatory
+participant-selection UI, instructor lead times, realtime slots, or other
+booking steps without bounded public facts or tool evidence.
 
 Confirmed reservation self-cancellation is Hermes reasoning context, not a
 runtime intent router. When a customer wants to cancel or change an already
