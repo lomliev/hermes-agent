@@ -86,6 +86,15 @@ Current line:
   requiring human action, never as a speculative standard closing. These are
   prompt, public-facts, and evaluation principles without keyword routing or
   answer post-processing.
+- `v2.11` - evidence-ordered campaign-bonus exception framing: Hermes verifies
+  the applicable terms and current usability before discussing a recipient
+  change, explains that self-transfer is not normally available, and only for a
+  concrete request may offer Emil's personal exception review and public phone.
+  It briefly connects that personal review to the SkyVision founding story and
+  the purpose of the bonus flights, without promising approval or introducing
+  the contact for ordinary missing/unused/expiry questions. This remains a
+  prompt-and-evaluation principle, not a keyword trigger, transfer classifier,
+  contact router, or answer template.
 
 ## Canonical Source
 

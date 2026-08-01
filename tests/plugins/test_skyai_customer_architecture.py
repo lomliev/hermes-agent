@@ -119,6 +119,66 @@ def test_campaign_gift_validity_is_general_evaluation_material() -> None:
     assert "no expiry claim without evidence" in scenario["focus"]
 
 
+def test_campaign_bonus_exception_follows_validity_and_carries_brand_story() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "ако бонусът вече е издаден, неговата валидност" in prompt
+    assert "не се прехвърля автоматично или самостоятелно" in prompt
+    assert "Едва при това конкретно искане" in prompt
+    assert "може лично да разреши изключение, без да обещаваш одобрение" in prompt
+    assert prompt.count("+359 886 417 142") == 1
+    assert "съосновател с Малина през 2007" in prompt
+    assert "от любов към летенето" in prompt
+    assert "покана повече хора да се докоснат до небето" in prompt
+    assert "липсващ/неизползваем бонус" in prompt
+    assert prompt.index("неговата валидност и текуща използваемост") < prompt.index(
+        "може лично да разреши изключение"
+    )
+
+    assert "Only when the customer concretely asks" in architecture
+    assert "give his public phone" in architecture
+    assert "founded SkyVision in 2007 from their love of flying" in architecture
+    assert "must not promise approval" in architecture
+    assert "not a phrase trigger" in architecture
+    assert "contact router, or response template" in architecture
+
+    principle = next(
+        case
+        for case in principles
+        if case["id"] == "campaign_bonus_recipient_exception_brand_story"
+    )
+    assert principle["source_threads"] == ["1532369013693481031"]
+    assert "validity and current usability first" in principle["principle"]
+    assert "cannot self-transfer" in principle["principle"]
+    assert "personally consider an exception" in principle["principle"]
+    assert "provide his public phone" in principle["principle"]
+    assert "founded SkyVision in 2007" in principle["principle"]
+    assert "Never promise approval" in principle["principle"]
+
+    eligible = next(
+        case
+        for case in scenarios
+        if case["id"] == "valid_bonus_recipient_change_exception"
+    )
+    assert eligible["history"] == [
+        {
+            "role": "user",
+            "content": "Проверих бонусния полет в профила си — активен е и е в срок.",
+        }
+    ]
+    assert "default owner and no self-transfer first" in eligible["focus"]
+    assert "personal exception review by Emil" in eligible["focus"]
+    assert "concise natural brand story" in eligible["focus"]
+
+    uncertain = next(
+        case for case in scenarios if case["id"] == "campaign_gift_time_validity"
+    )
+    assert "no transfer or exception guidance first" in uncertain["focus"]
+
+
 def test_gift_voucher_top_up_does_not_create_campaign_bonus() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     campaign = public_tools.handle_skyai_campaign_knowledge()["active_campaigns"][0]

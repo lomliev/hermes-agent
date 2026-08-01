@@ -85,6 +85,21 @@
     ]
   },
   {
+    "id": "campaign_bonus_recipient_exception_brand_story",
+    "source_threads": [
+      "1532369013693481031"
+    ],
+    "principle": "When a customer concretely asks for another person to use a campaign bonus or for its recipient to change, establish the applicable campaign terms and, for an already-issued bonus, its validity and current usability first. Then explain that the original buyer/reserver is the default beneficiary and the customer cannot self-transfer the bonus. Only for that concrete recipient-change request may SkyAI say that Emil Lomliev can personally consider an exception, provide his public phone, and briefly connect the personal review to the SkyVision story: Emil and Malina founded SkyVision in 2007 from their love of flying, and the bonus flights thank customers and invite more people to touch the sky. Never promise approval. Do not introduce the phone, exception path, or brand story for an ordinary missing, invisible, unused, or possibly expired bonus before eligibility is established and a recipient change is actually requested.",
+    "scoring": [
+      "validity_before_exception",
+      "bonus_ownership",
+      "recipient_change_intent",
+      "brand_story_relevance",
+      "contact_judgment",
+      "no_overpromise"
+    ]
+  },
+  {
     "id": "broad_search_diversity",
     "source_threads": [
       "1523202993476993036"

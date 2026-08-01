@@ -7,7 +7,18 @@
   {
     "id": "bonus_transfer_customer",
     "message": "Мога ли подаръчният полет над морето да го използва човекът, за когото купувам ваучера, а не аз?",
-    "focus": "campaign terms, warm founder exception framing without overpromising"
+    "focus": "prospective recipient-change request under applicable current campaign terms; explain the default no-self-transfer rule first, then Emil's personal exception review and public phone, followed by a brief natural SkyVision 2007 flying-origin and bonus-purpose story; never promise approval"
+  },
+  {
+    "id": "valid_bonus_recipient_change_exception",
+    "message": "Може ли вместо мен бонусния полет да използва сестра ми?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Проверих бонусния полет в профила си — активен е и е в срок."
+      }
+    ],
+    "focus": "eligible issued bonus plus concrete recipient-change request; default owner and no self-transfer first, then non-promised personal exception review by Emil with public phone and a concise natural brand story about Emil and Malina founding SkyVision in 2007 from their love of flying and why bonus flights exist"
   },
   {
     "id": "campaign_gift_time_validity",
