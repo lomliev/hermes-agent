@@ -41,6 +41,33 @@
     "focus": "delicate business-risk explanation in natural Bulgarian"
   },
   {
+    "id": "reservation_date_does_not_prove_booknow",
+    "message": "Резервацията ми е за 6 август от 17:00 и вече е платена.",
+    "history": [
+      {
+        "role": "user",
+        "content": "Използвах подарен ваучер и доплатих разликата за преживяването."
+      }
+    ],
+    "focus": "keep the established voucher path; date/time, payment, top-up, and confirmation do not prove rare BookNow; no routine BookNow question or explanation"
+  },
+  {
+    "id": "gift_voucher_top_up_creates_no_bonus",
+    "message": "Ще получа ли безплатния полет след като мине датата на резервацията?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Получих подаръчен ваучер, използвах го и доплатих разликата при резервацията."
+      }
+    ],
+    "focus": "top-up during gifted-voucher redemption creates no new campaign bonus; any original-purchase bonus stays linked to the original buyer profile or order email; do not introduce BookNow"
+  },
+  {
+    "id": "complete_answer_without_speculative_contact",
+    "message": "Къде в профила мога да видя ваучерите си?",
+    "focus": "answer the available self-service path directly; do not invent a possible problem or append info@skyvision.bg as a standard closing when no unresolved issue or contact request exists"
+  },
+  {
     "id": "voucher_extend",
     "message": "Как да удължа ваучера си?",
     "focus": "support accuracy; profile flow before escalation"

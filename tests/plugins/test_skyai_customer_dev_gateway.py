@@ -823,9 +823,14 @@ def test_system_prompt_links_campaign_bonus_id_to_slots_tool() -> None:
     assert "профил със същия имейл" in prompt
     assert "не започвай с директно 'да'" in prompt
     assert "не представяй бонуса като подарък за получателя" in prompt
-    assert "BookNow е директна резервация" in prompt
+    assert "Обичайната резервация в SkyVision е с ваучер" in prompt
+    assert "BookNow е рядко изключение" in prompt
+    assert "Не въвеждай и не питай за BookNow рутинно" in prompt
+    assert "сами не доказват BookNow" in prompt
+    assert "само ако клиентът го посочи" in prompt
     assert "парите ще бъдат възстановени" in prompt
-    assert "не като несигурна възможност" in prompt
+    assert "не създават нов кампаниен бонус" in prompt
+    assert "профила или имейла на първоначалния купувач" in prompt
     assert "не загатвай, че можеш да завършиш заявка" in prompt
     assert "Клиентът трябва сам да отвори" in prompt
     assert "продуктовия public_url" in prompt
@@ -851,13 +856,16 @@ def test_system_prompt_links_campaign_bonus_id_to_slots_tool() -> None:
     assert "ваучерът не може да се добави тук" in prompt
     assert "се обслужва от издателя си" in prompt
     assert "при неясен произход първо го уточни" not in prompt
-    assert "Писмен контакт с екипа: info@skyvision.bg" in prompt
+    assert "Давай info@skyvision.bg само" in prompt
+    assert "поискан писмен контакт или конкретен заявен проблем/нужда" in prompt
+    assert "Не предполагай проблем" in prompt
+    assert "не добавяй контакт като стандартен финал" in prompt
     assert "reservations@skyvision.bg е автоматичен адрес" in prompt
     assert "не канал за клиентски отговори" in prompt
     assert "не коментирай самото ограничение" in prompt
     assert "представи се кратко като SkyAI" in prompt
     assert "не решавай учебни задачи" in prompt
-    assert len(prompt) < 6000
+    assert len(prompt) < 7000
     assert "силно попадение" not in prompt
     assert "ще й легне" not in prompt
     assert "ако клиентът уточни нещо" not in prompt

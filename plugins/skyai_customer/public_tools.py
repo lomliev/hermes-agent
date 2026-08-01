@@ -1052,6 +1052,14 @@ def handle_skyai_campaign_knowledge(
                     "default_use_scope": "свързан е с акаунта, имейла и данните на купувача/резервиращия",
                     "manual_exception_approver": "Емил Ломлиев",
                 },
+                "gift_voucher_redemption": {
+                    "redemption_is_new_voucher_purchase": False,
+                    "top_up_creates_new_campaign_bonus": False,
+                    "top_up_changes_bonus_owner": False,
+                    "original_purchase_bonus_link": (
+                        "профилът или имейлът на човека, който е купил първоначалния ваучер"
+                    ),
+                },
                 "campaign_2026_facts": {
                     "public_page": "https://skyvision.bg/campaign/free-panoramic-flight/",
                     "bonus_product_url": (
