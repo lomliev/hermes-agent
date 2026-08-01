@@ -287,6 +287,122 @@ def test_evaluate_reservation_voucher_path_accepts_clarifying_branches() -> None
     assert result == {"score": 100, "issues": []}
 
 
+def test_evaluate_confirmed_reservation_rejects_immediate_team_only_escalation() -> None:
+    scenario = {"id": "confirmed_reservation_wants_another_experience"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Пишете на info@skyvision.bg, защото екипът трябва да провери "
+                "и промени резервацията. Не мога да я анулирам тук."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result["issues"] == [
+        "missing_self_service_cancel_first",
+        "team_only_escalation_before_self_service_boundary",
+        "missing_provider_defined_cutoff_uncertainty",
+        "missing_voucher_exchange_after_successful_cancellation",
+    ]
+
+
+def test_evaluate_confirmed_reservation_accepts_self_cancel_then_exchange_path() -> None:
+    scenario = {"id": "confirmed_reservation_wants_another_experience"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Първо провери self-service пътя: влез в профил -> Резервации и, "
+                "ако платформата показва „Анулиране на резервацията“, използвай него. "
+                "Не мога да обещая точен срок, защото cutoff-ът и евентуални такси са "
+                "условия на конкретния изпълнител/услуга и платформата ги прилага. "
+                "Ако действието липсва или бъде отказано, тогава пиши на екипа за съдействие "
+                "или преглед за изключение, без гаранция за анулиране. След успешно анулиране "
+                "и освобождаване на ваучера можеш от Резервирай/Замени услуга да избереш друго преживяване."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result == {"score": 100, "issues": []}
+
+
+def test_evaluate_reservation_cutoff_unknown_rejects_invented_hours() -> None:
+    scenario = {"id": "reservation_cancel_cutoff_unknown"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": "Можеш да анулираш до 24 часа преди резервацията от профила си.",
+            "cards": [],
+        },
+    )
+
+    assert "invents_universal_cancellation_window" in result["issues"]
+    assert "missing_provider_defined_cutoff_uncertainty" in result["issues"]
+
+
+def test_evaluate_reservation_cancel_unavailable_accepts_boundary_without_promise() -> None:
+    scenario = {"id": "reservation_cancel_unavailable_or_deadline_passed"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Ако бутонът „Анулиране на резервацията“ не се вижда или платформата отказва, "
+                "self-service анулирането не е налично според условията на конкретната услуга/изпълнител "
+                "или срокът е минал. Тогава можеш да се свържеш с екипа за съдействие или преглед "
+                "за изключение, но това не обещава анулиране."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result == {"score": 100, "issues": []}
+
+
+def test_evaluate_reservation_already_cancelled_accepts_voucher_path_only() -> None:
+    scenario = {"id": "reservation_already_cancelled_voucher_exchange"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Щом резервацията вече е анулирана и ваучерът е освободен, продължи от "
+                "профила/Резервирай и използвай „Замени услуга“ или избери друго преживяване."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result == {"score": 100, "issues": []}
+
+
+def test_evaluate_reservation_team_only_scenario_fails_wrong_info_answer() -> None:
+    scenario = {"id": "reservation_self_cancel_reject_team_only"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": "Екипът трябва да провери и промени резервацията, пишете на info@skyvision.bg.",
+            "cards": [],
+        },
+    )
+
+    assert "team_only_escalation_before_self_service_boundary" in result["issues"]
+    assert "missing_self_service_cancel_first" in result["issues"]
+
+
 def test_evaluate_campaign_gift_validity_rejects_time_inference_and_transfer_first() -> None:
     scenario = {"id": "campaign_gift_time_validity"}
 

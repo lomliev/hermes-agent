@@ -247,6 +247,75 @@ def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, A
             ),
         ):
             issues.append("asserts_unsupported_booking_operations")
+    elif scenario_id in {
+        "confirmed_reservation_wants_another_experience",
+        "reservation_cancel_cutoff_unknown",
+        "reservation_cancel_unavailable_or_deadline_passed",
+        "reservation_already_cancelled_voucher_exchange",
+        "reservation_self_cancel_reject_team_only",
+    }:
+        mentions_self_service_cancel = _has_any(reply, ("профил -> резервации", "профил/резервации", "профила си")) and _has_any(
+            reply,
+            ("анулиране на резервацията", "анулирай резервацията", "бутон", "действие"),
+        )
+        mentions_team = _has_any(reply, ("info@skyvision.bg", "екип", "поддръжк", "изпълнител"))
+        mentions_unavailable_boundary = _has_any(
+            reply,
+            ("липсва", "не се вижда", "отказва", "отхвърл", "не е налич", "срокът е минал", "deadline"),
+        )
+        mentions_provider_cutoff = _has_any(reply, ("изпълнител", "доставчик", "услуга", "условия")) and _has_any(
+            reply,
+            ("cutoff", "срок", "такс", "платформата", "прилага"),
+        )
+        mentions_no_promise = _has_any(
+            reply,
+            ("без гаранция", "не обещава", "не мога да обещая", "без обещание", "не е обещан"),
+        )
+        invented_window = _has_any(
+            reply,
+            (
+                "до 24 часа",
+                "24 часа преди",
+                "до 48 часа",
+                "48 часа преди",
+                "един ден преди",
+                "два дни преди",
+            ),
+        ) and not mentions_provider_cutoff
+        mentions_after_cancel_exchange = _has_any(
+            reply,
+            ("след успешно анулиране", "вече е анулирана", "резервацията вече е анулирана"),
+        ) and _has_any(reply, ("ваучер", "освобод")) and _has_any(
+            reply,
+            ("замени услуга", "друго преживяване", "избереш друго", "избери друго"),
+        )
+
+        if scenario_id in {"confirmed_reservation_wants_another_experience", "reservation_self_cancel_reject_team_only"}:
+            if not mentions_self_service_cancel:
+                issues.append("missing_self_service_cancel_first")
+            if mentions_team and not (mentions_self_service_cancel or mentions_unavailable_boundary):
+                issues.append("team_only_escalation_before_self_service_boundary")
+            if not mentions_provider_cutoff or invented_window:
+                issues.append("missing_provider_defined_cutoff_uncertainty")
+            if not mentions_after_cancel_exchange:
+                issues.append("missing_voucher_exchange_after_successful_cancellation")
+        elif scenario_id == "reservation_cancel_cutoff_unknown":
+            if invented_window:
+                issues.append("invents_universal_cancellation_window")
+            if not mentions_provider_cutoff or invented_window:
+                issues.append("missing_provider_defined_cutoff_uncertainty")
+        elif scenario_id == "reservation_cancel_unavailable_or_deadline_passed":
+            if not mentions_unavailable_boundary:
+                issues.append("missing_self_service_unavailable_boundary")
+            if not mentions_provider_cutoff:
+                issues.append("missing_provider_defined_cutoff_uncertainty")
+            if mentions_team and not mentions_no_promise:
+                issues.append("promises_or_overstates_exception_review")
+        elif scenario_id == "reservation_already_cancelled_voucher_exchange":
+            if not mentions_after_cancel_exchange:
+                issues.append("missing_voucher_exchange_after_successful_cancellation")
+            if _has_any(reply, ("първо", "провери")) and _has_any(reply, ("анулиране на резервацията", "анулирай")):
+                issues.append("repeats_cancellation_after_already_cancelled")
     elif scenario_id == "campaign_gift_time_validity":
         distinguishes_dates = (
             _has_any(reply, ("получ", "подар"))
