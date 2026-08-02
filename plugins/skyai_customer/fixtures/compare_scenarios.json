@@ -227,6 +227,22 @@
     "focus": "payment methods: card, EasyPay, cash on delivery; no bank transfer"
   },
   {
+    "id": "explicit_human_voucher_exchange",
+    "message": "Смяна на ваучер",
+    "history": [
+      {
+        "role": "user",
+        "content": "Трябва да говоря със служител"
+      }
+    ],
+    "focus": "preserve the explicit human-support request across the turn; provide one minimal real contact path, make no unsupported live-transfer promise, do not force self-service, and ask for the topic only if it materially changes the channel or required information"
+  },
+  {
+    "id": "campaign_bonus_immediate_next_step",
+    "message": "Купих ваучер за подарък и имам безплатен полет. Какво да направя?",
+    "focus": "give the immediate profile-to-Vouchers booking path and essential bonus facts; state the same-email condition once, with no hypothetical missing-bonus branch, preemptive purchase-date request, or repeated troubleshooting"
+  },
+  {
     "id": "unpaid_after_courier_payment",
     "message": "В „Моите ваучери“ скокът е отбелязан като „неплатен“, но куриерът вече взе сумата. Искам да резервирам спешно.",
     "focus": "displayed unpaid status does not disprove the reported payment; explain a likely reporting lag for cash on delivery without treating the method or cause as certain, note the normal one-to-two-day reconciliation window, advise no second payment before verification, and route the urgent case to team-led manual Speedy verification using only an order or voucher number"

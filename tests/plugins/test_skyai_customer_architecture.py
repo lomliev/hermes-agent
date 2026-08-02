@@ -299,6 +299,84 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     assert "no unresolved issue or contact request" in scenario["focus"]
 
 
+def test_explicit_human_request_uses_real_minimal_contact_path() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+
+    assert support["official_contacts"]["web_chat_live_transfer_available"] is False
+    assert "При изрично искане за човек го уважи" in prompt
+    assert "не налагай self-service" in prompt
+    assert "не обещавай transfer без такава функция" in prompt
+    assert "Дай минималния реален контакт" in prompt
+    assert "питай тема само ако променя канала/данните" in prompt
+    assert len(prompt) < 7000
+
+    assert "Explicit human-support requests are Hermes conversation state" in architecture
+    assert "must not promise a live transfer" in architecture
+    assert "minimal real contact path" in architecture
+    assert "only when it materially changes the channel" in architecture
+    assert "not a phrase-triggered handoff classifier" in architecture
+
+    principle = next(
+        case for case in principles if case["id"] == "explicit_human_support_request"
+    )
+    assert principle["source_threads"] == ["1533487761871339674"]
+    assert "honor that request directly" in principle["principle"]
+    assert "does not support it" in principle["principle"]
+    assert "minimal real contact path" in principle["principle"]
+    assert "materially changes" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "explicit_human_voucher_exchange"
+    )
+    assert scenario["history"] == [
+        {"role": "user", "content": "Трябва да говоря със служител"}
+    ]
+    assert scenario["message"] == "Смяна на ваучер"
+    assert "no unsupported live-transfer promise" in scenario["focus"]
+    assert "do not force self-service" in scenario["focus"]
+
+
+def test_simple_bonus_next_step_avoids_hypothetical_troubleshooting() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "При прост въпрос дай непосредствения път" in prompt
+    assert "не добавяй решения/данни за неизявени проблеми" in prompt
+    assert "сравни всяко твърдение и стъпка" in prompt
+    assert "ако смисълът вече е даден, изтрий го" in prompt
+    assert len(prompt) < 7000
+
+    assert "Simple next-step questions require the immediate usable path" in architecture
+    assert "must not append hypothetical failure branches" in architecture
+    assert "must not repeat the same condition" in architecture
+    assert "only after the customer reports the corresponding problem" in architecture
+    assert "not a symptom classifier" in architecture
+
+    principle = next(
+        case
+        for case in principles
+        if case["id"] == "immediate_path_without_hypothetical_troubleshooting"
+    )
+    assert principle["source_threads"] == ["1533558977596624936"]
+    assert "immediate usable path" in principle["principle"]
+    assert "hypothetical failure branch" in principle["principle"]
+    assert "repeat the same condition" in principle["principle"]
+    assert "actually reports" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "campaign_bonus_immediate_next_step"
+    )
+    assert "имам безплатен полет" in scenario["message"]
+    assert "no hypothetical missing-bonus branch" in scenario["focus"]
+    assert "state the same-email condition once" in scenario["focus"]
+
+
 def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())

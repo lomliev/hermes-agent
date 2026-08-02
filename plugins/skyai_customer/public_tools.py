@@ -694,6 +694,7 @@ def handle_skyai_support_knowledge(
         "email": "info@skyvision.bg",
         "client_working_hours": "Понеделник - Петък, 09:00-17:00",
         "closed": "Събота, неделя и официални празници",
+        "web_chat_live_transfer_available": False,
     }
     return {
         "status": "ok",

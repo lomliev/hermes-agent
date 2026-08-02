@@ -112,8 +112,12 @@ Current line:
   possibility, normally one or two days, while urgent reservations can receive
   manual payment verification. The payment method and cause remain unconfirmed
   without evidence, and no second payment is suggested before verification.
-  These are facts, prompt, and evaluation reasoning, not date/payment parsers,
-  status routers, keyword guards, or answer templates.
+  Explicit requests for a person use a real minimal contact path without a
+  fictional web-chat transfer or forced self-service. Simple next-step answers
+  no longer append hypothetical troubleshooting, pre-emptive data requests, or
+  repeated conditions. These are facts, prompt, and evaluation reasoning, not
+  date/payment/symptom parsers, handoff or status routers, keyword guards, or
+  answer templates.
 
 ## Canonical Source
 
