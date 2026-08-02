@@ -102,6 +102,13 @@ Current line:
   and exposes the public `kgTo` maximum-weight field. No query rewriting,
   keyword normalization, variant classifier, nearest-result router, or response
   template is added.
+- `v2.13` - confirmed-reservation temporal context: a natural upcoming date
+  without a year defaults to the current calendar year unless evidence makes
+  another year genuinely plausible and material. Specific confirmed dates and
+  status take precedence over speculative application of generic pre-booking
+  restrictions. The resolvable question is answered before any necessary
+  clarification. This is prompt-and-evaluation reasoning, not a date parser,
+  year classifier, reservation-state router, keyword guard, or answer template.
 
 ## Canonical Source
 

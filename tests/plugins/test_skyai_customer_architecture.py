@@ -412,6 +412,57 @@ def test_confirmed_reservation_self_cancellation_is_general_principle() -> None:
     assert "no universal cancellation window" in architecture
 
 
+def test_confirmed_reservation_uses_natural_date_and_state_context() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "предстояща дата без година" in prompt
+    assert "приеми текущата година" in prompt
+    assert "не питай за година само защото липсва" in prompt
+    assert "реално възможни и променят отговора" in prompt
+    assert "При заявена потвърдена резервация" in prompt
+    assert "общо условие преди резервация не доказва, че тя е невалидна" in prompt
+    assert "Не създавай проблем без противоречиво evidence" in prompt
+    assert "Отговори директно на решимото" in prompt
+    assert len(prompt) < 7000
+
+    assert "Unqualified booking dates" in architecture
+    assert "current calendar year" in architecture
+    assert "does not independently invalidate" in architecture
+    assert (
+        "not a date parser, year classifier, reservation-state router"
+        in architecture
+    )
+
+    principle = next(
+        case
+        for case in cases
+        if case["id"] == "confirmed_reservation_temporal_context"
+    )
+    assert principle["source_threads"] == ["1533398969818812608"]
+    assert "natural near-term calendar context" in principle["principle"]
+    assert "current year" in principle["principle"]
+    assert "generic pre-booking restriction" in principle["principle"]
+    assert "does not prove that confirmation invalid" in principle["principle"]
+
+    scenario = next(
+        case
+        for case in scenarios
+        if case["id"] == "confirmed_reservation_unqualified_year"
+    )
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Имам резервация за 22 септември за две нощувки.",
+        }
+    ]
+    assert "2 нощувки уикенд" in scenario["message"]
+    assert "no routine year clarification" in scenario["focus"]
+    assert "do not undermine the confirmed reservation" in scenario["focus"]
+
+
 def test_campaign_tool_returns_fact_pack_not_customer_script() -> None:
     result = public_tools.handle_skyai_campaign_knowledge()
     serialized = json.dumps(result, ensure_ascii=False)

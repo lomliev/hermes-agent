@@ -354,6 +354,20 @@
     ]
   },
   {
+    "id": "confirmed_reservation_temporal_context",
+    "source_threads": [
+      "1533398969818812608"
+    ],
+    "principle": "Interpret an unqualified booking date through the natural near-term calendar context. When an upcoming date naturally refers to the current year and no evidence conflicts, do not ask for the year merely because it was omitted; clarify only when multiple years are genuinely plausible and would change the answer. When the customer states that a reservation is confirmed, its specific dates and confirmation state are the relevant evidence. A generic pre-booking restriction does not prove that confirmation invalid or create a customer problem by itself. Answer the resolvable question directly before asking any material clarification, and describe a genuine evidence conflict as unresolved rather than guessing.",
+    "scoring": [
+      "natural_temporal_context",
+      "no_redundant_year_question",
+      "confirmed_state_precedence",
+      "no_speculative_problem",
+      "answer_before_material_clarification"
+    ]
+  },
+  {
     "id": "no_keyword_backend_patches",
     "source_threads": [
       "architecture"

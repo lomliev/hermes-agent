@@ -181,6 +181,17 @@
     "focus": "structured product detail cancellationPolicy has precedence over stale product prose; reject universal hardcoded hours"
   },
   {
+    "id": "confirmed_reservation_unqualified_year",
+    "message": "Резервацията е за „Природа и романтика – идеалната почивка за двама в Родопите“, вариант „2 нощувки уикенд“. Две ли ще бъдат?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Имам резервация за 22 септември за две нощувки."
+      }
+    ],
+    "focus": "natural upcoming date defaults to the current year with no routine year clarification; answer that the selected variant contains two nights and use confirmed dates as the relevant state; do not undermine the confirmed reservation with a generic pre-booking holiday restriction or invent a problem"
+  },
+  {
     "id": "reservation_cancel_unavailable_or_deadline_passed",
     "message": "В профила ми няма бутон за анулиране на резервацията или системата отказва. Какво следва?",
     "focus": "cancellation unavailable or deadline passed: explain self-service boundary under applicable reservation conditions, then assistance/exception review only without promising cancellation"

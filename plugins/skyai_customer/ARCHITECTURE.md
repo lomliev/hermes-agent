@@ -121,6 +121,19 @@ explain the valid voucher and direct-card branches. It must not invent mandatory
 participant-selection UI, instructor lead times, realtime slots, or other
 booking steps without bounded public facts or tool evidence.
 
+Unqualified booking dates are interpreted through natural conversational time
+context. When an upcoming date naturally points to the current calendar year
+and no evidence conflicts, Hermes must not ask for the year merely because it
+was omitted. It clarifies only when multiple years are genuinely plausible and
+would change the answer. When the customer states that a reservation is
+confirmed, its specific dates and confirmation state are the relevant evidence;
+a generic pre-booking voucher or product restriction does not independently
+invalidate it or establish a customer problem. A genuine evidence conflict
+remains unresolved until verified, and Hermes answers the already resolvable
+question before any material clarification. This is a prompt-and-evaluation
+principle, not a date parser, year classifier, reservation-state router,
+keyword guard, or response template.
+
 Confirmed reservation self-cancellation is Hermes reasoning context, not a
 runtime intent router. When a customer wants to cancel or change an already
 confirmed/upcoming reservation, Hermes should first explain the customer profile
