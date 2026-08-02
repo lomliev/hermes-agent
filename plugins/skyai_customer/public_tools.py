@@ -1313,7 +1313,12 @@ def _sanitize_product_detail(payload: Any) -> dict[str, Any]:
         ),
         "duration": source.get("duration"),
         "minimum_age": _first_present(source, "minimumAge", "min_age"),
-        "maximum_weight": _first_present(source, "maximumWeight", "maxWeight"),
+        "maximum_weight": _first_present(
+            source,
+            "maximumWeight",
+            "maxWeight",
+            "kgTo",
+        ),
         "for_kids": _first_present(
             source,
             "forKids",
@@ -1453,8 +1458,12 @@ def _compact_gallery(value: Any) -> list[dict[str, str]]:
             if type(src) is not str:
                 raise ValueError("gallery src/url must be a string")
             alt = item.get("alt", "")
+            if alt is None or alt == []:
+                alt = ""
             if type(alt) is not str:
-                raise ValueError("gallery alt must be a string")
+                raise ValueError(
+                    "gallery alt must be a string, null, or empty list"
+                )
             gallery.append({"src": src, "alt": alt[:160]})
         elif isinstance(item, str):
             gallery.append({"src": item, "alt": ""})

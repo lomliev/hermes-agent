@@ -386,6 +386,73 @@ def test_product_detail_accepts_exact_json_boolean_canbook(monkeypatch) -> None:
     assert detail["cancellation_policy"] == "Няма опция за безплатно анулиране"
 
 
+@pytest.mark.parametrize("missing_alt", [None, []])
+def test_product_detail_accepts_missing_gallery_alt_and_public_weight_alias(
+    monkeypatch,
+    missing_alt,
+) -> None:
+    monkeypatch.setattr(
+        public_tools,
+        "_http_json",
+        lambda _url, timeout=8.0: {
+            "data": {
+                "id": 99692,
+                "name": "Премиум скок с парашут",
+                "slug": "скок-с-парашут/премиум-скок",
+                "kgTo": "100",
+                "gallery": [
+                    {
+                        "src": "https://panel.skyvision.bg/uploads/product.webp",
+                        "alt": missing_alt,
+                    }
+                ],
+            }
+        },
+    )
+
+    detail = public_tools.handle_skyai_product_detail(
+        product_path="скок-с-парашут/премиум-скок"
+    )["detail"]
+
+    assert detail["maximum_weight"] == "100"
+    assert detail["images"] == [
+        {
+            "src": "https://panel.skyvision.bg/uploads/product.webp",
+            "alt": "",
+        }
+    ]
+
+
+def test_product_detail_still_rejects_non_null_non_string_gallery_alt(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        public_tools,
+        "_http_json",
+        lambda _url, timeout=8.0: {
+            "data": {
+                "id": 99693,
+                "name": "Невалидна галерия",
+                "slug": "скок-с-парашут/невалидна-галерия",
+                "gallery": [
+                    {
+                        "src": "https://panel.skyvision.bg/uploads/product.webp",
+                        "alt": 100,
+                    }
+                ],
+            }
+        },
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="gallery alt must be a string, null, or empty list",
+    ):
+        public_tools.handle_skyai_product_detail(
+            product_path="скок-с-парашут/невалидна-галерия"
+        )
+
+
 @pytest.mark.parametrize("bad_canbook", [2, -1, 1.0, 0.0, "1", "true"])
 def test_product_detail_rejects_unsupported_numeric_and_string_canbook(monkeypatch, bad_canbook) -> None:
     monkeypatch.setattr(

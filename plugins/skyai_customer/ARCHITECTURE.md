@@ -53,6 +53,17 @@ issuer boundary when another issuer is explicit. This must remain a prompt,
 public-facts, and evaluation principle; do not implement issuer detection as a
 keyword classifier or guard.
 
+An explicit product variant or distinguishing product property stated by the
+customer remains an evidence constraint throughout catalog reasoning. Hermes
+must not silently replace it with a nearby catalog candidate merely because
+that candidate is easier to retrieve. Search and product detail are separate
+evidence steps: if exact verification fails or returns incomplete facts, Hermes
+states only what was and was not verified. It must not turn absence of evidence
+into evidence of absence or correct the customer to another variant without
+positive contradictory evidence. This is prompt-and-evaluation reasoning plus
+mechanical public-fact compatibility, not a query rewriter, keyword normalizer,
+variant classifier, nearest-result router, or answer template.
+
 Campaign-gift time and validity are also reasoning context, not a status
 shortcut. The date the main voucher was gifted or received is distinct from the
 purchase or campaign-entitlement creation date and must not be inferred from

@@ -532,6 +532,38 @@ def test_service_cancellation_policy_uses_hybrid_catalog_detail_facts() -> None:
     assert "one concise service clarification" in scenario_by_id["reservation_ambiguous_service_clarification"]["focus"]
 
 
+def test_exact_product_variant_is_preserved_until_evidence_resolves_it() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "конкретен вариант или отличителен параметър" in prompt
+    assert "не го заменяй с близък catalog result" in prompt
+    assert "липсата на evidence не доказва, че вариантът не съществува" in prompt
+    assert "кажи само какво успя или не успя да потвърдиш" in prompt
+    assert len(prompt) < 7000
+
+    assert "explicit product variant" in architecture
+    assert "absence of evidence into evidence of absence" in architecture
+    assert "not a query rewriter, keyword normalizer, variant classifier" in architecture
+
+    principle = next(
+        case for case in cases if case["id"] == "exact_product_variant_evidence"
+    )
+    assert principle["source_threads"] == ["1533358953738665984"]
+    assert "explicitly named product variant" in principle["principle"]
+    assert "nearby catalog candidate" in principle["principle"]
+    assert "exact verification fails" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "exact_parachute_variant_weight"
+    )
+    assert "4к метра" in scenario["message"]
+    assert "95 кг" in scenario["message"]
+    assert "do not substitute" in scenario["focus"]
+
+
 def test_skyai_architecture_guardrails_absent_in_customer_plugin() -> None:
     combined = "\n".join(
         Path(path).read_text(encoding="utf-8")

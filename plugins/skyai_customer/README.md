@@ -95,6 +95,13 @@ Current line:
   the contact for ordinary missing/unused/expiry questions. This remains a
   prompt-and-evaluation principle, not a keyword trigger, transfer classifier,
   contact router, or answer template.
+- `v2.12` - exact product-variant evidence: an explicitly stated variant or
+  distinguishing property remains a constraint and is not replaced by a nearby
+  catalog result. Failed or incomplete verification stays uncertainty rather
+  than becoming a denial. Product detail now tolerates a missing image-alt fact
+  and exposes the public `kgTo` maximum-weight field. No query rewriting,
+  keyword normalization, variant classifier, nearest-result router, or response
+  template is added.
 
 ## Canonical Source
 

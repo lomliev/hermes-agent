@@ -340,6 +340,20 @@
     ]
   },
   {
+    "id": "exact_product_variant_evidence",
+    "source_threads": [
+      "1533358953738665984"
+    ],
+    "principle": "When a customer provides an explicitly named product variant or distinguishing property, preserve it as an evidence constraint. Do not silently replace it with a nearby catalog candidate. Verify the exact variant through catalog and bounded product detail evidence. If exact verification fails or returns incomplete facts, say only what could and could not be confirmed; absence of evidence is not evidence that the named variant does not exist.",
+    "scoring": [
+      "explicit_constraint_preservation",
+      "exact_variant_verification",
+      "catalog_candidate_separation",
+      "evidence_uncertainty",
+      "no_false_correction"
+    ]
+  },
+  {
     "id": "no_keyword_backend_patches",
     "source_threads": [
       "architecture"

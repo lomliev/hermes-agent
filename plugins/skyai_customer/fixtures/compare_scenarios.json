@@ -42,6 +42,11 @@
     "focus": "product detail variants, duration, participants"
   },
   {
+    "id": "exact_parachute_variant_weight",
+    "message": "Ако съм 95 кг ще ме пуснат ли за скок от 4к метра?",
+    "focus": "customer explicitly names the 4000 m variant and asks about weight; verify that exact product and its public maximum-weight fact, do not substitute a nearby 3000/3500 m catalog candidate, and if exact detail is unavailable preserve uncertainty rather than deny the variant"
+  },
+  {
     "id": "booknow_explain_customer_value",
     "message": "Какво е BookNow и кога е по-добре да резервирам директно, вместо да купувам ваучер?",
     "focus": "BookNow positioning, refund nuance, direct reservation value"
