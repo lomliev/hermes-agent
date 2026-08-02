@@ -463,6 +463,62 @@ def test_confirmed_reservation_uses_natural_date_and_state_context() -> None:
     assert "do not undermine the confirmed reservation" in scenario["focus"]
 
 
+def test_unpaid_status_uses_payment_reconciliation_evidence() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+
+    reconciliation = support["payment_methods"]["status_reconciliation"]
+    assert reconciliation == {
+        "unpaid_status_proves_missing_payment": False,
+        "cash_on_delivery_reporting_lag": (
+            "Speedy може вече да е събрал плащането, но още да не го е отчел към SkyVision"
+        ),
+        "typical_reporting_delay_days": {"minimum": 1, "maximum": 2},
+        "urgent_manual_verification": {
+            "available": True,
+            "performed_by": "екипа на SkyVision",
+            "checked_with": "Speedy",
+            "minimum_identifier": "номер на поръчката или ваучера",
+        },
+        "second_payment_before_verification_allowed": False,
+    }
+
+    assert "статус „неплатен“ не доказва липса на плащане" in prompt
+    assert "особено при наложен платеж" in prompt
+    assert "не приемай платежния метод за факт" in prompt
+    assert "1–2 дни" in prompt
+    assert "спешна резервация" in prompt
+    assert "проверява плащането при Speedy" in prompt
+    assert "Не насочвай към второ плащане преди проверка" in prompt
+    assert len(prompt) < 7000
+
+    assert "Payment-status reconciliation is Hermes reasoning context" in architecture
+    assert "does not prove that payment is absent" in architecture
+    assert "one or two days" in architecture
+    assert "manual verification with Speedy" in architecture
+    assert "not a keyword classifier, payment-status router" in architecture
+
+    principle = next(
+        case for case in principles if case["id"] == "payment_status_reconciliation"
+    )
+    assert principle["source_threads"] == ["1533403264475988179"]
+    assert "does not prove that payment is absent" in principle["principle"]
+    assert "one or two days" in principle["principle"]
+    assert "urgent reservation" in principle["principle"]
+    assert "second payment" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "unpaid_after_courier_payment"
+    )
+    assert "неплатен" in scenario["message"]
+    assert "куриерът вече взе сумата" in scenario["message"]
+    assert "likely reporting lag" in scenario["focus"]
+    assert "manual Speedy verification" in scenario["focus"]
+
+
 def test_campaign_tool_returns_fact_pack_not_customer_script() -> None:
     result = public_tools.handle_skyai_campaign_knowledge()
     serialized = json.dumps(result, ensure_ascii=False)

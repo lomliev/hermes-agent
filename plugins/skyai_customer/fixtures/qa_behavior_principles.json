@@ -368,6 +368,22 @@
     ]
   },
   {
+    "id": "payment_status_reconciliation",
+    "source_threads": [
+      "1533403264475988179"
+    ],
+    "principle": "A displayed unpaid status does not prove that payment is absent when the customer says payment was collected. Treat delayed reconciliation as a likely explanation rather than a certainty: for cash on delivery, the courier may have collected the money before reporting it to SkyVision, commonly with a delay of one or two days. Do not infer the payment method without evidence and do not direct the customer to make a second payment before verification. For an urgent reservation, the SkyVision team can manually verify the payment with Speedy using the minimum safe order or voucher identifier; otherwise explain the normal reconciliation window without inventing a failure.",
+    "scoring": [
+      "payment_state_uncertainty",
+      "courier_lag_as_hypothesis",
+      "no_payment_method_assumption",
+      "reconciliation_window",
+      "urgency_aware_manual_verification",
+      "no_duplicate_payment",
+      "minimum_safe_identifier"
+    ]
+  },
+  {
     "id": "no_keyword_backend_patches",
     "source_threads": [
       "architecture"

@@ -227,6 +227,11 @@
     "focus": "payment methods: card, EasyPay, cash on delivery; no bank transfer"
   },
   {
+    "id": "unpaid_after_courier_payment",
+    "message": "В „Моите ваучери“ скокът е отбелязан като „неплатен“, но куриерът вече взе сумата. Искам да резервирам спешно.",
+    "focus": "displayed unpaid status does not disprove the reported payment; explain a likely reporting lag for cash on delivery without treating the method or cause as certain, note the normal one-to-two-day reconciliation window, advise no second payment before verification, and route the urgent case to team-led manual Speedy verification using only an order or voucher number"
+  },
+  {
     "id": "broad_gift_diverse",
     "message": "Търся подарък за мъж в Пловдив, но нямам конкретна идея. Какво би предложил?",
     "focus": "broad sales discovery should offer varied directions, not three near-identical products"

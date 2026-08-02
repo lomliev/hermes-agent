@@ -134,6 +134,19 @@ question before any material clarification. This is a prompt-and-evaluation
 principle, not a date parser, year classifier, reservation-state router,
 keyword guard, or response template.
 
+Payment-status reconciliation is Hermes reasoning context. A displayed unpaid
+status does not prove that payment is absent when the customer reports that it
+was collected. Cash on delivery can be reflected later because Speedy may have
+collected the amount before reporting it to SkyVision, commonly after one or
+two days. Hermes presents that as a likely explanation rather than a confirmed
+payment method or cause unless evidence establishes it. It must not recommend a
+second payment before verification. For a non-urgent case it can explain the
+normal reconciliation window; for an urgent reservation it can direct the case
+to the SkyVision team for manual verification with Speedy, using only the
+minimum safe order or voucher identifier. This is a facts, prompt, and
+evaluation principle, not a keyword classifier, payment-status router,
+payment-method inferencer, guard, or response template.
+
 Confirmed reservation self-cancellation is Hermes reasoning context, not a
 runtime intent router. When a customer wants to cancel or change an already
 confirmed/upcoming reservation, Hermes should first explain the customer profile

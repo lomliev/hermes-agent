@@ -774,6 +774,20 @@ def handle_skyai_support_knowledge(
                 "available_in_online_checkout": False,
                 "online_checkout_label": None,
             },
+            "status_reconciliation": {
+                "unpaid_status_proves_missing_payment": False,
+                "cash_on_delivery_reporting_lag": (
+                    "Speedy може вече да е събрал плащането, но още да не го е отчел към SkyVision"
+                ),
+                "typical_reporting_delay_days": {"minimum": 1, "maximum": 2},
+                "urgent_manual_verification": {
+                    "available": True,
+                    "performed_by": "екипа на SkyVision",
+                    "checked_with": "Speedy",
+                    "minimum_identifier": "номер на поръчката или ваучера",
+                },
+                "second_payment_before_verification_allowed": False,
+            },
         },
         "order_and_invoice_support": {
             "order_note_handling": (

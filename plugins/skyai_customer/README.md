@@ -107,8 +107,13 @@ Current line:
   another year genuinely plausible and material. Specific confirmed dates and
   status take precedence over speculative application of generic pre-booking
   restrictions. The resolvable question is answered before any necessary
-  clarification. This is prompt-and-evaluation reasoning, not a date parser,
-  year classifier, reservation-state router, keyword guard, or answer template.
+  clarification. A displayed unpaid status also does not disprove a reported
+  payment: delayed Speedy reconciliation for cash on delivery is a likely
+  possibility, normally one or two days, while urgent reservations can receive
+  manual payment verification. The payment method and cause remain unconfirmed
+  without evidence, and no second payment is suggested before verification.
+  These are facts, prompt, and evaluation reasoning, not date/payment parsers,
+  status routers, keyword guards, or answer templates.
 
 ## Canonical Source
 
