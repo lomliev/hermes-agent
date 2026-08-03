@@ -32,7 +32,7 @@ ALLOWED_PREFIXES = (
 
 
 def run_git(args: list[str]) -> str:
-    return subprocess.check_output(["git", *args], text=True).strip()
+    return subprocess.check_output(["git", *args]).decode("utf-8").strip()
 
 
 def changed_files(base_ref: str = "origin/main") -> list[str]:
