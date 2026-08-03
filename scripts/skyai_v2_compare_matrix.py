@@ -139,6 +139,40 @@ def summarize_compare_response(scenario: dict[str, Any], response: dict[str, Any
     }
 
 
+def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, Any]:
+    """Return DEV-only evaluator issues for selected compare-matrix scenarios.
+
+    This helper scores captured QA responses only. It is not imported by customer
+    runtime code and does not route catalog/product selection.
+    """
+
+    scenario_id = str(scenario.get("id") or "")
+    reply = _norm(side.get("reply"))
+    raw_cards = side.get("cards")
+    cards: list[Any] = raw_cards if isinstance(raw_cards, list) else []
+    issues: list[str] = []
+
+    if side.get("status") != "ok":
+        issues.append("side_status_not_ok")
+    if scenario_id == "plovdiv_dining_not_culinary_course":
+        has_course = _cards_contain_any(cards, ("кулинар", "сладкар", "десерт")) or _has_any(
+            reply,
+            ("кулинарен курс", "кулинарният курс", "сладкарски курс", "курс", "работилница"),
+        )
+        presents_as_match = _has_any(
+            reply,
+            ("най-близко", "подходящ", "предлож", "вариант", "може да хапнете", "за хапване"),
+        )
+        if has_course and presents_as_match:
+            issues.append("presents_culinary_course_as_dining_match")
+        if not _has_any(reply, ("няма проверено", "нямаме проверено", "не виждам проверено", "няма налично")):
+            issues.append("missing_no_verified_dining_match_disclosure")
+        if has_course and not _has_any(reply, ("дали", "приемлива алтернатива", "алтернатива", "подходяща алтернатива")):
+            issues.append("missing_course_alternative_consent_question")
+
+    return {"issues": issues}
+
+
 def run_matrix(
     scenarios: list[dict[str, Any]],
     *,
@@ -207,6 +241,32 @@ def render_console_summary(report: dict[str, Any]) -> str:
         if summary["prod_reply_preview"]:
             lines.append(f"  prod: {summary['prod_reply_preview']}")
     return "\n".join(lines)
+
+
+def _norm(value: Any) -> str:
+    if type(value) is not str:
+        return ""
+    return value.casefold()
+
+
+def _has_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle.casefold() in text for needle in needles)
+
+
+def _cards_contain(cards: list[Any], needle: str) -> bool:
+    needle_norm = needle.casefold()
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        for key in ("title", "category", "location", "public_url"):
+            value = card.get(key)
+            if isinstance(value, str) and needle_norm in value.casefold():
+                return True
+    return False
+
+
+def _cards_contain_any(cards: list[Any], needles: tuple[str, ...]) -> bool:
+    return any(_cards_contain(cards, needle) for needle in needles)
 
 
 def _preview(value: Any, limit: int = 180) -> str:

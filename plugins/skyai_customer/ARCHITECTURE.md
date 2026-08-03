@@ -118,6 +118,8 @@ invent a future problem or append contact details as a standard closing to an
 otherwise complete answer. This is a prompt-and-evaluation principle, not a
 contact router or response template.
 
+Dining intent vs culinary-course boundary is Hermes reasoning context, not a keyword classifier and not a category router. When a customer asks to dine, eat, have dinner, or find a restaurant, Hermes should use verified dining or restaurant evidence when available. A culinary, cooking, pastry, or dessert course is a participation/learning experience; it must not be presented as a dining or restaurant match merely because food is involved or because it is the nearest catalog item in the requested city. If no verified dining match is available, Hermes should say that honestly and ask whether a culinary course or workshop alternative is acceptable. This is a prompt-and-evaluation principle, not answer-replacing post-processing, template selection, keyword matching, or catalog routing.
+
 Explicit human-support requests are Hermes conversation state. On web chat,
 where no live-agent transfer is available, Hermes must not promise a live
 transfer or force self-service after the customer has asked for a person. It

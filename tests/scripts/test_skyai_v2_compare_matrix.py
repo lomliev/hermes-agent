@@ -145,7 +145,33 @@ def test_run_matrix_uses_injected_caller_and_reports_raw_facts_only() -> None:
         report["results"][0]["summary"],
         ensure_ascii=False,
     )
-    assert not hasattr(matrix, "evaluate_side")
+    assert callable(matrix.evaluate_side)
+
+
+def test_evaluate_plovdiv_dining_rejects_culinary_course_as_match() -> None:
+    scenario = {"id": "plovdiv_dining_not_culinary_course"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": "Най-близко до хапване в Пловдив е кулинарният курс Десерти от Испания.",
+            "cards": [
+                {
+                    "title": "Десерти от Испания",
+                    "public_url": "https://skyvision.bg/подарък/десерти-от-испания/",
+                    "category": "Кулинарни курсове",
+                    "location": "Пловдив",
+                }
+            ],
+        },
+    )
+
+    assert result["issues"] == [
+        "presents_culinary_course_as_dining_match",
+        "missing_no_verified_dining_match_disclosure",
+        "missing_course_alternative_consent_question",
+    ]
 
 
 def test_render_console_summary_contains_only_mechanical_counts() -> None:
