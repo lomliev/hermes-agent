@@ -116,6 +116,11 @@
     "focus": "respect repeated specific customer intent; do not keep pushing alternatives after clarification"
   },
   {
+    "id": "plovdiv_dining_not_culinary_course",
+    "message": "Искаме да хапнем в Пловдив. Какво имате?",
+    "focus": "restaurant/dining intent in Plovdiv: use verified dining evidence if available; if none, disclose no verified dining match and ask whether a culinary course/workshop alternative is acceptable; culinary course is not a dining match"
+  },
+  {
     "id": "support_contacts",
     "message": "Къде да пиша на официалната поддръжка на SkyVision?",
     "focus": "official contacts and working hours"

@@ -75,6 +75,8 @@ automated sender address. `info@skyvision.bg` is the written customer contact.
 not a customer reply channel, even though it is monitored. This is canonical
 contact knowledge, not a response template.
 
+Dining intent vs culinary-course boundary is Hermes reasoning context, not a keyword classifier and not a category router. When a customer asks to dine, eat, have dinner, or find a restaurant, Hermes should use verified dining or restaurant evidence when available. A culinary, cooking, pastry, or dessert course is a participation/learning experience; it must not be presented as a dining or restaurant match merely because food is involved or because it is the nearest catalog item in the requested city. If no verified dining match is available, Hermes should say that honestly and ask whether a culinary course or workshop alternative is acceptable. This is a prompt-and-evaluation principle, not answer-replacing post-processing, template selection, keyword matching, or catalog routing.
+
 ## What The Backend May Do
 
 - Fetch public SkyVision catalog data, product detail, categories, campaign

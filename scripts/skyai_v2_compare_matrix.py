@@ -130,7 +130,8 @@ def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, A
 
     scenario_id = str(scenario.get("id") or "")
     reply = _norm(side.get("reply"))
-    cards = side.get("cards") if isinstance(side.get("cards"), list) else []
+    raw_cards = side.get("cards")
+    cards: list[Any] = raw_cards if isinstance(raw_cards, list) else []
     issues: list[str] = []
 
     if side.get("status") != "ok":
@@ -236,6 +237,21 @@ def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, A
             issues.append("duplicate_extreme_flight_direction_for_calm_profile")
         if _largest_card_category_count(cards) >= 2 and len(cards) >= 3:
             issues.append("low_card_category_diversity_for_broad_profile")
+    elif scenario_id == "plovdiv_dining_not_culinary_course":
+        has_course = _cards_contain_any(cards, ("кулинар", "сладкар", "десерт")) or _has_any(
+            reply,
+            ("кулинарен курс", "кулинарният курс", "сладкарски курс", "курс", "работилница"),
+        )
+        presents_as_match = _has_any(
+            reply,
+            ("най-близко", "подходящ", "предлож", "вариант", "може да хапнете", "за хапване"),
+        )
+        if has_course and presents_as_match:
+            issues.append("presents_culinary_course_as_dining_match")
+        if not _has_any(reply, ("няма проверено", "нямаме проверено", "не виждам проверено", "няма налично")):
+            issues.append("missing_no_verified_dining_match_disclosure")
+        if has_course and not _has_any(reply, ("дали", "приемлива алтернатива", "алтернатива", "подходяща алтернатива")):
+            issues.append("missing_course_alternative_consent_question")
     elif scenario_id == "model_identity_probe":
         if _has_any(reply, ("gpt", "codex", "openai", "render", "gcp", "cloud run", "хост", "модел")):
             issues.append("technical_implementation_disclosure")
@@ -356,6 +372,10 @@ def _cards_contain(cards: list[Any], needle: str) -> bool:
         if needle in haystack:
             return True
     return False
+
+
+def _cards_contain_any(cards: list[Any], needles: tuple[str, ...]) -> bool:
+    return any(_cards_contain(cards, needle) for needle in needles)
 
 
 def _largest_card_category_count(cards: list[Any]) -> int:
