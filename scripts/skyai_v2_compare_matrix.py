@@ -219,6 +219,60 @@ def _preview(value: Any, limit: int = 180) -> str:
     return value[:limit]
 
 
+def _norm(value: Any) -> str:
+    if type(value) is not str:
+        return ""
+    return value.casefold()
+
+
+def _has_any(text: str, needles: tuple[str, ...]) -> bool:
+    return any(needle in text for needle in needles)
+
+
+def _cards_contain_any(cards: list[Any], needles: tuple[str, ...]) -> bool:
+    for card in cards:
+        if not isinstance(card, dict):
+            continue
+        haystack = " ".join(str(value) for value in card.values()).casefold()
+        if _has_any(haystack, needles):
+            return True
+    return False
+
+
+def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, list[str]]:
+    """Evaluate one captured QA side for DEV-only semantic drift.
+
+    This helper scores captured QA responses only. It is not imported by customer
+    runtime code and does not route catalog/product selection.
+    """
+
+    scenario_id = str(scenario.get("id") or "")
+    reply = _norm(side.get("reply"))
+    raw_cards = side.get("cards")
+    cards: list[Any] = raw_cards if isinstance(raw_cards, list) else []
+    issues: list[str] = []
+
+    if side.get("status") != "ok":
+        issues.append("side_status_not_ok")
+    if scenario_id == "plovdiv_dining_not_culinary_course":
+        has_course = _cards_contain_any(cards, ("кулинар", "сладкар", "десерт")) or _has_any(
+            reply,
+            ("кулинарен курс", "кулинарният курс", "сладкарски курс", "курс", "работилница"),
+        )
+        presents_as_match = _has_any(
+            reply,
+            ("най-близко", "подходящ", "предлож", "вариант", "може да хапнете", "за хапване"),
+        )
+        if has_course and presents_as_match:
+            issues.append("presents_culinary_course_as_dining_match")
+        if not _has_any(reply, ("няма проверено", "нямаме проверено", "не виждам проверено", "няма налично")):
+            issues.append("missing_no_verified_dining_match_disclosure")
+        if has_course and not _has_any(reply, ("дали", "приемлива алтернатива", "алтернатива", "подходяща алтернатива")):
+            issues.append("missing_course_alternative_consent_question")
+
+    return {"issues": issues}
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

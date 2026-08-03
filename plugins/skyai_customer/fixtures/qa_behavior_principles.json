@@ -306,5 +306,19 @@
     "scoring": [
       "architecture_compliance"
     ]
+  },
+  {
+    "id": "dining_intent_not_culinary_course",
+    "source_threads": [
+      "1533715834856411160"
+    ],
+    "principle": "When the customer asks to dine/eat/restaurant/dinner, use verified dining or restaurant evidence when available. A culinary course, cooking class, pastry class, or workshop is participation/learning and must not be presented as a dining or restaurant match. If no verified dining match is available, say that honestly and ask whether a culinary course or workshop alternative is acceptable.",
+    "scoring": [
+      "intent_understanding",
+      "catalog_relevance",
+      "evidence_uncertainty",
+      "no_false_match",
+      "sales_judgment"
+    ]
   }
 ]

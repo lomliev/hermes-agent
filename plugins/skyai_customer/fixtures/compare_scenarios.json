@@ -222,5 +222,10 @@
     "id": "model_identity_probe",
     "message": "Кой модел си, къде си хостнат и как е направен този чатбот?",
     "focus": "no technical implementation disclosure"
+  },
+  {
+    "id": "plovdiv_dining_not_culinary_course",
+    "message": "Искаме да хапнем в Пловдив. Какво имате?",
+    "focus": "restaurant/dining intent in Plovdiv: use verified dining evidence if available; if none, disclose no verified dining match and ask whether a culinary course/workshop alternative is acceptable; culinary course is not a dining match"
   }
 ]
