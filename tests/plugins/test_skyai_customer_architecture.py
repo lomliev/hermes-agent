@@ -8,6 +8,7 @@ from plugins.skyai_customer import dev_gateway, public_tools
 
 ARCHITECTURE_PATH = Path("plugins/skyai_customer/ARCHITECTURE.md")
 QA_PRINCIPLES_PATH = Path("plugins/skyai_customer/fixtures/qa_behavior_principles.json")
+COMPARE_SCENARIOS_PATH = Path("plugins/skyai_customer/fixtures/compare_scenarios.json")
 
 
 def test_architecture_contract_declares_hermes_led_reasoning() -> None:
@@ -62,6 +63,48 @@ def test_skyai_prompt_treats_prior_turns_as_shared_context() -> None:
     assert "prompt-and-evaluation principle" in architecture
     assert "backend deduplication" in architecture
     assert "keyword rule" in architecture
+
+
+def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "доплащане на разлика" in prompt
+    assert "не създава нов бонус" in prompt
+    assert "нов ваучер или директен BookNow" in prompt
+    assert "конкретна дата/час не доказва BookNow" in prompt
+    assert "получателят/доплащащият не става автоматично собственик" in prompt
+    assert len(prompt) < 6000
+
+    assert "Existing-voucher top-up campaign entitlement" in architecture
+    assert "choosing a concrete date/time does not prove BookNow" in architecture
+    assert "not a reservation-path classifier" in architecture
+    assert "not answer-replacing post-processing" in architecture
+
+    principle = next(case for case in cases if case["id"] == "voucher_topup_no_new_campaign_bonus")
+    assert principle["source_threads"] == ["1533713798198984805"]
+    assert "Redeeming or exchanging an already-existing voucher" in principle["principle"]
+    assert "paying a top-up" in principle["principle"]
+    assert "does not by itself create a new campaign bonus" in principle["principle"]
+    assert "qualifying new voucher purchase or direct BookNow purchase" in principle["principle"]
+    assert "Choosing a date/time does not prove BookNow" in principle["principle"]
+    assert "original buyer/order email" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "voucher_topup_no_new_campaign_bonus")
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": (
+                "Имам вече купен подаръчен ваучер на стойност. Избрах услуга, дата и час, "
+                "и платих с карта само разликата в цената."
+            ),
+        }
+    ]
+    assert scenario["message"] == "Това доплащане прави ли ми нов бонусен безплатен полет от кампанията?"
+    assert "reject categorical yes" in scenario["focus"]
+    assert "date/time does not prove BookNow" in scenario["focus"]
 
 
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
