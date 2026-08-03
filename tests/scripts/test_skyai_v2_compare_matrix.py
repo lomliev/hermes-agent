@@ -279,6 +279,32 @@ def test_evaluate_calm_sliven_rejects_far_locations_before_nearby() -> None:
     assert "jumps_far_from_sliven_before_nearby_options" in result["issues"]
 
 
+def test_evaluate_plovdiv_dining_rejects_culinary_course_as_match() -> None:
+    scenario = {"id": "plovdiv_dining_not_culinary_course"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": "Най-близко до хапване в Пловдив е кулинарният курс Десерти от Испания.",
+            "cards": [
+                {
+                    "title": "Десерти от Испания",
+                    "public_url": "https://skyvision.bg/подарък/десерти-от-испания/",
+                    "category": "Кулинарни курсове",
+                    "location": "Пловдив",
+                }
+            ],
+        },
+    )
+
+    assert result["issues"] == [
+        "presents_culinary_course_as_dining_match",
+        "missing_no_verified_dining_match_disclosure",
+        "missing_course_alternative_consent_question",
+    ]
+
+
 def test_evaluate_broad_gift_diversity_uses_cards_only_in_qa_script() -> None:
     scenario = {"id": "broad_gift_diverse"}
 

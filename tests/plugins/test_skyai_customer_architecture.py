@@ -107,6 +107,35 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "date/time does not prove BookNow" in scenario["focus"]
 
 
+def test_plovdiv_dining_intent_is_not_satisfied_by_culinary_course() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "хапване/вечеря/ресторант" in prompt
+    assert "кулинарен курс" in prompt
+    assert "не е dining match" in prompt
+    assert "няма проверено dining съвпадение" in prompt
+    assert len(prompt) < 6200
+
+    assert "Dining intent vs culinary-course boundary" in architecture
+    assert "not a keyword classifier" in architecture
+    assert "not a category router" in architecture
+    assert "not answer-replacing post-processing" in architecture
+
+    principle = next(case for case in cases if case["id"] == "dining_intent_not_culinary_course")
+    assert principle["source_threads"] == ["1533715834856411160"]
+    assert "dine/eat/restaurant/dinner" in principle["principle"]
+    assert "culinary course" in principle["principle"]
+    assert "must not be presented as a dining or restaurant match" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "plovdiv_dining_not_culinary_course")
+    assert scenario["message"] == "Искаме да хапнем в Пловдив. Какво имате?"
+    assert "restaurant/dining intent" in scenario["focus"]
+    assert "culinary course is not a dining match" in scenario["focus"]
+
+
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
