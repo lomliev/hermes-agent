@@ -794,6 +794,13 @@ def handle_skyai_support_knowledge(
                 "monitored": True,
                 "accepts_customer_replies": False,
             },
+            "provider_contact_details": {
+                "available_after_successful_reservation": True,
+                "delivery_channel": "email",
+                "source": "reservation_confirmation_email",
+                "public_product_page_contains_direct_phone": False,
+                "official_support_contact_available": True,
+            },
             "customer_profile_section": "Профил -> Резервации",
             "self_service_cancel_action": "Анулиране на резервацията",
             "customer_cancel_endpoint_pattern": "POST reservation/cancel/<voucher>",

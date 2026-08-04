@@ -254,6 +254,20 @@
     ]
   },
   {
+    "id": "pilot_provider_contact_confirmation_email",
+    "source_threads": [
+      "case:skyai-pilot-phone-confirmation-email-20260804"
+    ],
+    "principle": "When a customer asks for a pilot, provider, executor, or organizer phone/contact, explain that direct contact details are supplied after successful reservation in the reservation confirmation email/details. Public product page facts such as provider name, location, timing, or weather-call instructions are still usable, but they do not by themselves prove a public product page phone or section. If the confirmation email/details are missing, suggest checking inbox/spam and contacting official SkyVision support with reservation number/context. never invent or expose an unverified pilot/provider phone.",
+    "scoring": [
+      "reservation_contact_accuracy",
+      "evidence_uncertainty",
+      "no_unverified_phone",
+      "support_next_step",
+      "public_product_fact_preservation"
+    ]
+  },
+  {
     "id": "reservation_voucher_path_ambiguity",
     "source_threads": [
       "real_customer_discord_reservation_voucher_ambiguity"

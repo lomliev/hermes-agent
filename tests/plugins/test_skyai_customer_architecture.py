@@ -217,6 +217,67 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     assert "not a customer reply channel" in principle["principle"]
 
 
+def test_pilot_provider_phone_is_confirmation_email_context_not_public_page_script() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "пилот/изпълнител/организатор" in prompt
+    assert "след успешна резервация" in prompt
+    assert "имейла за потвърждение" in prompt
+    assert "публичната продуктова страница" in prompt
+    assert "не измисляй публична секция" in prompt
+    assert "номер на пилот" in prompt
+    assert len(prompt) < 6300
+
+    reservation_support = support["reservation_support"]
+    provider_contact = reservation_support["provider_contact_details"]
+    assert provider_contact["available_after_successful_reservation"] is True
+    assert provider_contact["delivery_channel"] == "email"
+    assert provider_contact["source"] == "reservation_confirmation_email"
+    assert provider_contact["public_product_page_contains_direct_phone"] is False
+    assert provider_contact["official_support_contact_available"] is True
+    assert "missing_details_next_step" not in provider_contact
+    assert "customer_safe_summary" not in provider_contact
+    assert "direct_provider_phone" not in json.dumps(provider_contact, ensure_ascii=False)
+
+    assert "Provider/pilot contact details are reservation-confirmation context" in architecture
+    assert "not a public-page section detector" in architecture
+    assert "not a product-specific answer template" in architecture
+
+    principle = next(case for case in cases if case["id"] == "pilot_provider_contact_confirmation_email")
+    assert principle["source_threads"] == ["case:skyai-pilot-phone-confirmation-email-20260804"]
+    assert "successful reservation" in principle["principle"]
+    assert "confirmation email" in principle["principle"]
+    assert "public product page" in principle["principle"]
+    assert "never invent" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "pilot_provider_phone_missing_public_section")
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Къде мога да намеря номера на пилота?",
+        },
+        {
+            "role": "user",
+            "content": "Става дума за въвеждащия полет-урок със самолет над Рилски езера.",
+        },
+    ]
+    assert scenario["message"] == "Не намирам такава секция на страницата. Къде е телефонът?"
+    assert "confirmation email" in scenario["focus"]
+    assert "no public page phone/section claim" in scenario["focus"]
+    assert "preserve provider/location/timing/weather public facts" in scenario["focus"]
+
+    positive = next(case for case in scenarios if case["id"] == "pilot_provider_public_facts_still_usable")
+    assert positive["message"] == (
+        "Можеш ли да ми припомниш изпълнителя, локацията и дали трябва да се съобразя с времето?"
+    )
+    assert "provider/location/timing/weather facts remain usable" in positive["focus"]
+    assert "do not suppress public product facts" in positive["focus"]
+
+
 def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
@@ -337,14 +398,23 @@ def test_customer_tools_return_facts_not_instruction_keys() -> None:
         public_tools.handle_skyai_campaign_knowledge(),
         public_tools.handle_skyai_support_knowledge(include_contacts=True),
     ]
+    forbidden_instruction_or_reply_keys = {
+        "answer_guidance",
+        "guidance",
+        "missing_details_next_step",
+        "customer_safe_summary",
+        "recommended_action",
+        "recommended_response",
+        "ready_made_reply",
+        "reply_template",
+        "when_to_use",
+        "customer_facing_flow",
+    }
 
     for payload in payloads:
         keys = _payload_keys(payload)
-        assert "answer_guidance" not in keys
-        assert "guidance" not in keys
+        assert keys.isdisjoint(forbidden_instruction_or_reply_keys)
         assert not any(key.endswith("_guidance") for key in keys)
-        assert "when_to_use" not in keys
-        assert "customer_facing_flow" not in keys
 
 
 def test_catalog_tool_has_no_backend_persona_or_keyword_policy() -> None:

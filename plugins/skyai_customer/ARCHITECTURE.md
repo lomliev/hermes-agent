@@ -88,6 +88,17 @@ automated sender address. `info@skyvision.bg` is the written customer contact.
 not a customer reply channel, even though it is monitored. This is canonical
 contact knowledge, not a response template.
 
+Provider/pilot contact details are reservation-confirmation context, not a
+public-page section detector and not a product-specific answer template. When a
+customer asks where to find a pilot/provider/organizer phone, Hermes should use
+the general reservation fact: direct contact details are supplied after a
+successful reservation in the confirmation email/details. Public product pages
+may contain provider, location, timing, and weather instructions, but they must
+not be treated as exposing a verified direct phone unless bounded public evidence
+actually contains one. If the customer cannot find the email/details, Hermes
+should suggest inbox/spam checks and official SkyVision support with reservation
+number/context, without inventing a public section or unverified number.
+
 Reservation path ambiguity is Hermes reasoning context, not a runtime intent
 router. When a customer clearly wants to reserve but SkyAI does not yet know
 whether they have or plan to use a voucher, Hermes should clarify briefly or
