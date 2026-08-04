@@ -217,6 +217,66 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     assert "not a customer reply channel" in principle["principle"]
 
 
+def test_pilot_provider_phone_is_confirmation_email_context_not_public_page_script() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "пилот/изпълнител/организатор" in prompt
+    assert "след успешна резервация" in prompt
+    assert "имейла за потвърждение" in prompt
+    assert "публичната продуктова страница" in prompt
+    assert "не измисляй публична секция" in prompt
+    assert "номер на пилот" in prompt
+    assert len(prompt) < 6300
+
+    reservation_support = support["reservation_support"]
+    provider_contact = reservation_support["provider_contact_details"]
+    assert provider_contact["available_after_successful_reservation"] is True
+    assert provider_contact["customer_source"] == "reservation confirmation email"
+    assert provider_contact["public_product_page_contains_direct_phone"] is False
+    assert provider_contact["missing_details_next_step"] == (
+        "check inbox/spam and contact SkyVision support with reservation number/context"
+    )
+    assert "direct_provider_phone" not in json.dumps(provider_contact, ensure_ascii=False)
+
+    assert "Provider/pilot contact details are reservation-confirmation context" in architecture
+    assert "not a public-page section detector" in architecture
+    assert "not a product-specific answer template" in architecture
+
+    principle = next(case for case in cases if case["id"] == "pilot_provider_contact_confirmation_email")
+    assert principle["source_threads"] == ["case:skyai-pilot-phone-confirmation-email-20260804"]
+    assert "successful reservation" in principle["principle"]
+    assert "confirmation email" in principle["principle"]
+    assert "public product page" in principle["principle"]
+    assert "never invent" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "pilot_provider_phone_missing_public_section")
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Къде мога да намеря номера на пилота?",
+        },
+        {
+            "role": "user",
+            "content": "Става дума за въвеждащия полет-урок със самолет над Рилски езера.",
+        },
+    ]
+    assert scenario["message"] == "Не намирам такава секция на страницата. Къде е телефонът?"
+    assert "confirmation email" in scenario["focus"]
+    assert "no public page phone/section claim" in scenario["focus"]
+    assert "preserve provider/location/timing/weather public facts" in scenario["focus"]
+
+    positive = next(case for case in scenarios if case["id"] == "pilot_provider_public_facts_still_usable")
+    assert positive["message"] == (
+        "Можеш ли да ми припомниш изпълнителя, локацията и дали трябва да се съобразя с времето?"
+    )
+    assert "provider/location/timing/weather facts remain usable" in positive["focus"]
+    assert "do not suppress public product facts" in positive["focus"]
+
+
 def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())

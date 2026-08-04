@@ -794,6 +794,19 @@ def handle_skyai_support_knowledge(
                 "monitored": True,
                 "accepts_customer_replies": False,
             },
+            "provider_contact_details": {
+                "available_after_successful_reservation": True,
+                "customer_source": "reservation confirmation email",
+                "public_product_page_contains_direct_phone": False,
+                "missing_details_next_step": (
+                    "check inbox/spam and contact SkyVision support with reservation number/context"
+                ),
+                "customer_safe_summary": (
+                    "Контактните детайли за изпълнителя/пилота/организатора се дават след "
+                    "успешна резервация в потвърдителния имейл. Ако клиентът не ги намира, "
+                    "да провери входящи/спам и да се свърже с екипа с номер/контекст на резервацията."
+                ),
+            },
             "customer_profile_section": "Профил -> Резервации",
             "self_service_cancel_action": "Анулиране на резервацията",
             "customer_cancel_endpoint_pattern": "POST reservation/cancel/<voucher>",
