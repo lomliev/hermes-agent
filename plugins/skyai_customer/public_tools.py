@@ -932,6 +932,21 @@ def handle_skyai_support_knowledge(
                     "manual_personalization_or_reprint_as_new_voucher": False,
                     "funds_another_voucher_purchase": False,
                 },
+                "ownership_transfer_boundary": {
+                    "service_exchange_authorizes_transfer_or_regift": False,
+                    "remove_from_profile_serial_handoff_recipient_add_flow_supported": False,
+                    "recipient_can_authorize_transfer": False,
+                    "requires_verified_original_buyer_or_order_email_request": True,
+                    "requires_official_support_approval": True,
+                    "customer_visible_approver_identity": None,
+                    "support_escalation_reissues_new_personalized_paper_voucher": False,
+                },
+                "same_voucher_informal_presentation": {
+                    "allowed_if_customer_already_has_original_document": True,
+                    "changes_ownership_or_recipient_authorization": False,
+                    "changes_service_or_validity": False,
+                    "creates_new_official_paper_voucher_or_envelope": False,
+                },
             },
             "campaign_gifts": {
                 "not_regular_vouchers": (

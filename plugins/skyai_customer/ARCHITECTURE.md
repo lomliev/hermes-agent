@@ -105,7 +105,21 @@ eligible for its verified reservation and service-exchange self-service;
 service exchange changes the experience and is not conversion or reissue into a
 new personalized voucher document. An existing voucher cannot be personalized,
 manually reprinted, or reissued as a new paper/envelope gift voucher, and its
-value cannot fund another voucher. This prompt, public-facts, and model-authored
+value cannot fund another voucher.
+
+Issued-voucher ownership transfer boundary is a stricter public-fact boundary:
+service exchange changes value usage, not ownership authority. Removing the
+voucher from one profile, handing over a serial/code, or asking a recipient to
+add it in another profile is not supported self-service transfer/regift
+authority. Ownership/recipient transfer requires a verified
+original-buyer/order-email request plus approval through the official support
+process, without exposing internal approver identity. A recipient who is not the
+original buyer cannot authorize the transfer. Support escalation is not a path
+to manually reissue a new personalized paper voucher or envelope. If the
+customer already has the original voucher document, printing or handing it over
+is only informal presentation of the same voucher and changes no ownership,
+recipient authorization, service, validity, or official paper-voucher state. A
+new personalized physical gift/package is a separate paid purchase. This prompt, public-facts, and model-authored
 evaluation coverage is not a runtime intent router, keyword/phrase detector,
 regex classifier, template selector, deterministic composer, scorer, mandatory
 question gate, or answer-replacing post-processing.

@@ -327,6 +327,21 @@
     ]
   },
   {
+    "id": "issued_voucher_ownership_transfer_boundary",
+    "source_threads": [
+      "caa71cdd-f12b-5df1-8d3b-6b30097de873"
+    ],
+    "principle": "Service exchange/reservation may change how the same existing issued voucher value is used, but it is not self-service ownership transfer or regift authority. Do not present profile removal, serial/code handoff, or recipient profile addition as a supported flow. Ownership/recipient transfer is not self-service: it requires a verified original-buyer request from the original buyer/order-email holder plus official support approval, without naming an internal approver. A recipient who is not the original buyer cannot authorize the transfer. Support escalation does not manually reissue a new personalized paper voucher or envelope. Printing or handing over an already available original voucher document is only informal presentation of the same voucher and does not change ownership, recipient authorization, service, validity, or official voucher state; a new personalized physical gift/package is a separate paid purchase.",
+    "scoring": [
+      "voucher_lifecycle_accuracy",
+      "ownership_clarity",
+      "service_exchange_boundary",
+      "no_false_self_service_transfer",
+      "no_internal_identity_exposure",
+      "paper_voucher_boundary"
+    ]
+  },
+  {
     "id": "service_specific_cancellation_policy",
     "source_threads": [
       "structured_public_product_detail_audit_2026_08_01"

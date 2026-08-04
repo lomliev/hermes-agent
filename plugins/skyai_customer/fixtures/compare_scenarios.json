@@ -98,6 +98,25 @@
     "focus": "legitimate service exchange remains available for the issued voucher and changes the experience; it is not conversion/reissue into a new personalized voucher document"
   },
   {
+    "id": "issued_voucher_ownership_transfer_multiturn_sc7",
+    "message": "Как тогава мога да го подаря на друг човек?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Когато правя резервация, ваучерът е валиден до 13.10.2026 г., но не искам да определям дата. Как да постъпя?"
+      },
+      {
+        "role": "user",
+        "content": "Да, но искам да го изкарам като подарък в плик."
+      },
+      {
+        "role": "user",
+        "content": "Този ваучер е подарен на мен, но аз не искам да го ползвам. Искам да го подаря на друг човек с друго преживяване и да изкарам ваучера на хартия."
+      }
+    ],
+    "focus": "SC7 exact failed public-smoke regression: validity date preserves already-issued voucher state; turns 3/4 must not recommend service exchange + profile removal + serial handoff + recipient profile add. Must state transfer is not self-service, current recipient cannot authorize it, and verified original-buyer request plus approval is required without exposing internal approver identity. Distinguish same-voucher informal presentation from official reissue/personalized paper/envelope, and distinguish separate paid new physical gift purchase."
+  },
+  {
     "id": "massage_sofia_budget",
     "message": "Търся масаж за двама в София до 100 евро. Какво ще ми предложиш?",
     "focus": "catalog relevance, cards, EUR pricing, budget taste"
