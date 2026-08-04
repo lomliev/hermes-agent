@@ -796,16 +796,10 @@ def handle_skyai_support_knowledge(
             },
             "provider_contact_details": {
                 "available_after_successful_reservation": True,
-                "customer_source": "reservation confirmation email",
+                "delivery_channel": "email",
+                "source": "reservation_confirmation_email",
                 "public_product_page_contains_direct_phone": False,
-                "missing_details_next_step": (
-                    "check inbox/spam and contact SkyVision support with reservation number/context"
-                ),
-                "customer_safe_summary": (
-                    "Контактните детайли за изпълнителя/пилота/организатора се дават след "
-                    "успешна резервация в потвърдителния имейл. Ако клиентът не ги намира, "
-                    "да провери входящи/спам и да се свърже с екипа с номер/контекст на резервацията."
-                ),
+                "official_support_contact_available": True,
             },
             "customer_profile_section": "Профил -> Резервации",
             "self_service_cancel_action": "Анулиране на резервацията",

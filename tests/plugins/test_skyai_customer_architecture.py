@@ -235,11 +235,12 @@ def test_pilot_provider_phone_is_confirmation_email_context_not_public_page_scri
     reservation_support = support["reservation_support"]
     provider_contact = reservation_support["provider_contact_details"]
     assert provider_contact["available_after_successful_reservation"] is True
-    assert provider_contact["customer_source"] == "reservation confirmation email"
+    assert provider_contact["delivery_channel"] == "email"
+    assert provider_contact["source"] == "reservation_confirmation_email"
     assert provider_contact["public_product_page_contains_direct_phone"] is False
-    assert provider_contact["missing_details_next_step"] == (
-        "check inbox/spam and contact SkyVision support with reservation number/context"
-    )
+    assert provider_contact["official_support_contact_available"] is True
+    assert "missing_details_next_step" not in provider_contact
+    assert "customer_safe_summary" not in provider_contact
     assert "direct_provider_phone" not in json.dumps(provider_contact, ensure_ascii=False)
 
     assert "Provider/pilot contact details are reservation-confirmation context" in architecture
@@ -397,14 +398,23 @@ def test_customer_tools_return_facts_not_instruction_keys() -> None:
         public_tools.handle_skyai_campaign_knowledge(),
         public_tools.handle_skyai_support_knowledge(include_contacts=True),
     ]
+    forbidden_instruction_or_reply_keys = {
+        "answer_guidance",
+        "guidance",
+        "missing_details_next_step",
+        "customer_safe_summary",
+        "recommended_action",
+        "recommended_response",
+        "ready_made_reply",
+        "reply_template",
+        "when_to_use",
+        "customer_facing_flow",
+    }
 
     for payload in payloads:
         keys = _payload_keys(payload)
-        assert "answer_guidance" not in keys
-        assert "guidance" not in keys
+        assert keys.isdisjoint(forbidden_instruction_or_reply_keys)
         assert not any(key.endswith("_guidance") for key in keys)
-        assert "when_to_use" not in keys
-        assert "customer_facing_flow" not in keys
 
 
 def test_catalog_tool_has_no_backend_persona_or_keyword_policy() -> None:
