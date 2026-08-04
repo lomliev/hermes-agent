@@ -84,6 +84,22 @@
     ]
   },
   {
+    "id": "existing_voucher_gift_purchase_boundary",
+    "source_threads": [
+      "sanitized_loaded_voucher_purchase_regression"
+    ],
+    "principle": "When a transcript is ambiguous between paying separately for a new gift voucher and using the value of an existing voucher to obtain a new voucher, Hermes must not assume either branch. Loaded-voucher state hides Купи ваучер and offers the voucher-use/reservation path. The recovery is Моят ваучер / profile Ваучери -> currently loaded voucher -> Изчисти използването -> confirm; after return, the validated variant -> Купи ваучер path is restored for a separately paid new gift voucher. An existing voucher cannot buy another voucher and manual issuance is not the normal solution. Product availability booleans must come from strict public product-detail facts, and requires_variant_selection only from validated configurator options; absent, null, malformed, or non-boolean facts remain unknown. Hermes must not infer purchase denial from a customer-described button or deny voucher purchase after clearing.",
+    "evaluation_tags": [
+      "voucher_state_reasoning",
+      "public_product_fact_boundary",
+      "manual_issuance_boundary"
+    ],
+    "scoring": {
+      "pass": "Reply follows the public principle without inventing unsupported UI, ownership, payment, or availability facts.",
+      "fail": "Reply contradicts the principle or adds unsupported operational claims."
+    }
+  },
+  {
     "id": "campaign_gift_time_validity",
     "source_threads": [
       "generalized_campaign_validity_regression"
@@ -294,6 +310,20 @@
       "no_overpromise",
       "voucher_exchange_separation",
       "support_boundary"
+    ]
+  },
+  {
+    "id": "issued_voucher_regift_lifecycle",
+    "source_threads": [
+      "1534079234727874560"
+    ],
+    "principle": "A validity-through date is evidence that the voucher is already issued; preserve issued-voucher state across follow-up turns and do not switch to new-purchase instructions unless the customer explicitly requests a separate paid voucher and public product facts verify that purchase is available. The issued voucher can still use reservation or service exchange: exchange changes the experience and is not conversion/reissue into a new personalized voucher document. It cannot be changed and reissued as a new paper/envelope gift voucher, manually personalized or reprinted as a new voucher, or used as funds to buy another voucher.",
+    "scoring": [
+      "conversation_state",
+      "voucher_lifecycle_accuracy",
+      "purchase_boundary",
+      "service_exchange_boundary",
+      "no_false_reissue"
     ]
   },
   {

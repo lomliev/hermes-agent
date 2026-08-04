@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 from pathlib import Path
 
@@ -32,7 +33,7 @@ def test_skyai_prompt_is_principle_based_not_script_pack() -> None:
 
     assert "Hermes мисли" in prompt
     assert "не е заповед какво да кажеш" in prompt
-    assert len(prompt) < 6300
+    assert len(prompt) < 7100
     assert "SkyAI sales playbook" not in prompt
     assert "do_not_say" not in prompt
     assert "customer_facing_flow" not in prompt
@@ -130,7 +131,7 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "нов ваучер или директен BookNow" in prompt
     assert "конкретна дата/час не доказва BookNow" in prompt
     assert "получателят/доплащащият не става автоматично собственик" in prompt
-    assert len(prompt) < 6300
+    assert len(prompt) < 7100
 
     assert "Existing-voucher top-up campaign entitlement" in architecture
     assert "choosing a concrete date/time does not prove BookNow" in architecture
@@ -159,6 +160,195 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert scenario["message"] == "Това доплащане прави ли ми нов бонусен безплатен полет от кампанията?"
     assert "reject categorical yes" in scenario["focus"]
     assert "date/time does not prove BookNow" in scenario["focus"]
+
+
+def test_loaded_voucher_state_recovery_is_model_visible_without_manual_issuance() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    for required in (
+        "Зареден съществуващ ваучер",
+        "Моят ваучер",
+        "Изчисти използването",
+        "Потвърждавате ли изчистването на ваучера?",
+        "Купи ваучер",
+    ):
+        assert required in prompt
+    assert "Съществуващ ваучер не купува друг ваучер" in prompt
+    assert "ръчно издаване" in prompt
+    assert len(prompt) < 6700
+
+    assert "Existing voucher vs new gift voucher ambiguity" in architecture
+    assert "clearVoucher" in architecture
+    assert "not a product-button keyword rule" in architecture
+    assert "manual-issuance exception" in architecture
+
+    boundary = support["vouchers"]["existing_value_voucher_gift_purchase_boundary"]
+    assert boundary["existing_value_voucher_can_purchase_another_voucher"] is False
+    assert boundary["existing_value_voucher_valid_use"] == "experience_reservation"
+    assert boundary["separately_paid_new_gift_voucher_possible_when_product_facts_support_it"] is True
+
+    loaded = boundary["loaded_existing_voucher_state"]
+    assert loaded["product_page_state"] == {
+        "canUseVoucher": True,
+        "buy_voucher_button_visible": False,
+        "reserve_voucher_button_visible": True,
+        "shows_voucher_use_deposit_payment_state": True,
+    }
+    assert loaded["confirmation_text"] == "Потвърждавате ли изчистването на ваучера?"
+    assert "clearVoucher" in loaded["clear_effect"]
+    assert "Изчисти използването" in " ".join(loaded["recovery_steps"])
+    assert "validated variant" in " ".join(loaded["recovery_steps"])
+
+    principle = next(
+        case
+        for case in cases
+        if case["id"] == "existing_voucher_gift_purchase_boundary"
+    )
+    assert principle["source_threads"] == [
+        "sanitized_loaded_voucher_purchase_regression"
+    ]
+    assert "Loaded-voucher state hides Купи ваучер" in principle["principle"]
+    assert "Product availability booleans must come from strict public product-detail facts" in principle["principle"]
+
+    scenario_by_id = {case["id"]: case for case in scenarios}
+    for scenario_id in (
+        "loaded_voucher_state_clear_to_buy_gift_voucher",
+        "product_detail_buy_voucher_restored_after_clear",
+        "existing_voucher_cannot_buy_new_voucher",
+        "separate_paid_new_gift_voucher_purchase",
+        "existing_voucher_gift_path_ambiguous",
+    ):
+        assert scenario_id in scenario_by_id
+    loaded_scenario = scenario_by_id[
+        "loaded_voucher_state_clear_to_buy_gift_voucher"
+    ]
+    assert "Изчисти използването" in loaded_scenario["focus"]
+    assert "normal purchase restoration" in loaded_scenario["focus"]
+
+
+def test_issued_voucher_regift_lifecycle_state_persists_without_reissue_claims() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    for required in (
+        "Дата на валидност („валиден до ...“) е evidence",
+        "вече издаден ваучер",
+        "запазвай issued-voucher state",
+        "не преминавай към нова покупка",
+        "не се преиздава като нов хартиен/пликов подаръчен ваучер",
+        "не е средство за купуване на друг ваучер",
+    ):
+        assert required in prompt
+    assert "13.10.2026" not in prompt
+    assert len(prompt) < 6900
+
+    lifecycle = support["vouchers"]["issued_voucher_regift_lifecycle"]
+    assert lifecycle["validity_through_date_evidence"] == "voucher_already_issued"
+    assert lifecycle["followup_state_boundary"] == (
+        "same_issued_voucher_until_explicit_separate_paid_purchase_evidence"
+    )
+    assert lifecycle["new_gift_voucher_purchase_branch"] == {
+        "separate_payment_required": True,
+        "public_product_purchase_facts_required": True,
+    }
+    document_operations = lifecycle["existing_voucher_document_operations"]
+    assert document_operations["paper_or_envelope_reissue_as_new_gift_voucher"] is False
+    assert document_operations["manual_personalization_or_reprint_as_new_voucher"] is False
+    assert document_operations["funds_another_voucher_purchase"] is False
+
+    assert "Issued-voucher regift lifecycle" in architecture
+    assert "valid-through date is state evidence" in architecture
+    assert "not a runtime intent router" in architecture
+    assert "not answer-replacing post-processing" in architecture
+
+    principle = next(case for case in cases if case["id"] == "issued_voucher_regift_lifecycle")
+    assert "validity-through date is evidence that the voucher is already issued" in principle["principle"]
+    assert "preserve issued-voucher state across follow-up turns" in principle["principle"]
+    assert "not switch to new-purchase instructions" in principle["principle"]
+    assert "cannot be changed and reissued as a new paper/envelope gift voucher" in principle["principle"]
+    assert "used as funds to buy another voucher" in principle["principle"]
+
+    scenario_by_id = {case["id"]: case for case in scenarios}
+    scenario = scenario_by_id["issued_voucher_regift_lifecycle_envelope_followup"]
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Имам ваучер, който е валиден до 13.10.2026, но още не искам да избирам дата за резервация.",
+        }
+    ]
+    assert "в плик" in scenario["message"]
+    assert "validity-through date means already issued" in scenario["focus"]
+    assert "no new checkout/envelope delivery promise" in scenario["focus"]
+
+
+def test_issued_voucher_regift_boundary_keeps_service_exchange_available() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "Замени услуга" in prompt
+    assert "не е конверсия/преиздаване в нов персонализиран ваучер" in prompt
+    lifecycle = support["vouchers"]["issued_voucher_regift_lifecycle"]
+    assert lifecycle["supported_existing_voucher_self_service"] == [
+        "reservation",
+        "service_exchange",
+    ]
+    assert lifecycle["service_exchange_changes_experience_not_voucher_document"] is True
+    assert lifecycle["service_exchange_is_conversion_to_new_personalized_voucher"] is False
+
+    scenario_by_id = {case["id"]: case for case in scenarios}
+    scenario = scenario_by_id["issued_voucher_service_exchange_still_allowed"]
+    assert "Замени услуга" in scenario["message"]
+    assert "legitimate service exchange remains available" in scenario["focus"]
+    assert "not conversion/reissue into a new personalized voucher" in scenario["focus"]
+
+
+def test_loaded_voucher_compare_matrix_keeps_model_authored_qa_external() -> None:
+    source = Path("scripts/skyai_v2_compare_matrix.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    runtime_functions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name not in {"load_scenarios", "build_compare_payload"}
+    ]
+    runtime_source = "\n".join(
+        ast.get_source_segment(source, node) or "" for node in runtime_functions
+    )
+
+    task_scenario_ids = (
+        "loaded_voucher_state_clear_to_buy_gift_voucher",
+        "existing_voucher_cannot_buy_new_voucher",
+        "separate_paid_new_gift_voucher_purchase",
+        "existing_voucher_gift_path_ambiguous",
+        "issued_voucher_regift_lifecycle_envelope_followup",
+        "issued_voucher_service_exchange_still_allowed",
+    )
+    for scenario_id in task_scenario_ids:
+        assert scenario_id not in runtime_source
+
+    forbidden_helpers = (
+        "_suggests_" + "manual_voucher_issuance",
+        "_claims_" + "existing_voucher_can_buy_another",
+        "_detects_" + "issued_voucher_regift",
+        "_classifies_" + "voucher_lifecycle",
+    )
+    for helper_name in forbidden_helpers:
+        assert helper_name not in source
+
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+    scenario_by_id = {case["id"]: case for case in scenarios}
+    for scenario_id in task_scenario_ids:
+        scenario = scenario_by_id[scenario_id]
+        assert type(scenario["message"]) is str and scenario["message"].strip()
+        assert type(scenario["focus"]) is str and scenario["focus"].strip()
 
 
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
@@ -230,7 +420,7 @@ def test_pilot_provider_phone_is_confirmation_email_context_not_public_page_scri
     assert "публичната продуктова страница" in prompt
     assert "не измисляй публична секция" in prompt
     assert "номер на пилот" in prompt
-    assert len(prompt) < 6300
+    assert len(prompt) < 7100
 
     reservation_support = support["reservation_support"]
     provider_contact = reservation_support["provider_contact_details"]
@@ -289,7 +479,7 @@ def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     assert "директен BookNow/карта само без ваучер" in prompt
     assert "Не твърди задължителни UI стъпки" in prompt
     assert "tool/public evidence" in prompt
-    assert len(prompt) < 6300
+    assert len(prompt) < 7100
 
     assert "Reservation path ambiguity is Hermes reasoning context" in architecture
     assert "not a runtime intent router" in architecture

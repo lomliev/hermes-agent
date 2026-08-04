@@ -881,6 +881,58 @@ def handle_skyai_support_knowledge(
                 "customer_remains_actor": True,
                 "chat_privacy_note": "SkyAI не добавя, не използва и не изтрива ваучери вместо клиента и не иска пълен код в публичния чат.",
             },
+            "existing_value_voucher_gift_purchase_boundary": {
+                "existing_value_voucher_can_purchase_another_voucher": False,
+                "existing_value_voucher_valid_use": "experience_reservation",
+                "separately_paid_new_gift_voucher_possible_when_product_facts_support_it": True,
+                "new_gift_voucher_purchase_requires_separate_payment": True,
+                "normal_purchase_button": "Купи ваучер",
+                "loaded_existing_voucher_state": {
+                    "diagnosis": "customer_is_currently_using_an_already_loaded_voucher",
+                    "product_page_state": {
+                        "canUseVoucher": True,
+                        "buy_voucher_button_visible": False,
+                        "reserve_voucher_button_visible": True,
+                        "shows_voucher_use_deposit_payment_state": True,
+                    },
+                    "clear_action_location": (
+                        "Моят ваучер / profile Ваучери, on the row for the currently loaded voucher"
+                    ),
+                    "confirmation_text": "Потвърждавате ли изчистването на ваучера?",
+                    "clear_effect": (
+                        "clearVoucher removes the loaded-voucher browser state; after reload or return, "
+                        "the normal Купи ваучер and Резервирай/BookNow paths are restored."
+                    ),
+                    "recovery_steps": [
+                        "Open Моят ваучер / profile Ваучери.",
+                        "On the currently loaded voucher choose „Изчисти използването“ and confirm „Потвърждавате ли изчистването на ваучера?“.",
+                        "Return to the product, choose the validated variant, then use „Купи ваучер“ for the separately paid new gift voucher.",
+                    ],
+                },
+                "ambiguity_note": (
+                    "Ако не е ясно дали клиентът плаща отделно за нов подаръчен ваучер или иска да "
+                    "използва стойността на съществуващ ваучер, двата маршрута остават отделни."
+                ),
+            },
+            "issued_voucher_regift_lifecycle": {
+                "validity_through_date_evidence": "voucher_already_issued",
+                "followup_state_boundary": "same_issued_voucher_until_explicit_separate_paid_purchase_evidence",
+                "new_gift_voucher_purchase_branch": {
+                    "separate_payment_required": True,
+                    "public_product_purchase_facts_required": True,
+                },
+                "supported_existing_voucher_self_service": [
+                    "reservation",
+                    "service_exchange",
+                ],
+                "service_exchange_changes_experience_not_voucher_document": True,
+                "service_exchange_is_conversion_to_new_personalized_voucher": False,
+                "existing_voucher_document_operations": {
+                    "paper_or_envelope_reissue_as_new_gift_voucher": False,
+                    "manual_personalization_or_reprint_as_new_voucher": False,
+                    "funds_another_voucher_purchase": False,
+                },
+            },
             "campaign_gifts": {
                 "not_regular_vouchers": (
                     "Подаръците/бонусите към поръчка не са стандартни ваучери и нямат ваучерен/сериен номер "

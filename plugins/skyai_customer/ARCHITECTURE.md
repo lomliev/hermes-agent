@@ -82,6 +82,34 @@ entitlement, account visibility, or same-day slot availability. This is a
 prompt-and-evaluation principle, not answer-replacing post-processing, template
 selection, keyword matching, or a booking-intent router.
 
+Existing voucher vs new gift voucher ambiguity is Hermes reasoning context, not
+a product-button keyword rule or a manual-issuance exception. A loaded existing
+voucher is a stateful storefront fact: `canUseVoucher=true` hides `Купи ваучер`
+and presents the voucher-use/reservation path, including its deposit/payment
+state. The customer recovers the separate-purchase path from `Моят ваучер` or
+profile `Ваучери`: on the currently loaded voucher choose `Изчисти
+използването`, confirm `Потвърждавате ли изчистването на ваучера?`, and let
+`clearVoucher` clear the browser state. Returning to the product, selecting its
+validated variant, and choosing `Купи ваучер` then buys a separately paid new
+gift voucher. Clearing does not mean the product lacks voucher purchase, an
+existing voucher cannot pay for another voucher, and manual issuance is not the
+normal solution. Hermes should explain the two routes without inferring
+availability from a customer-described button.
+
+Issued-voucher regift lifecycle is Hermes reasoning context. A valid-through
+date is state evidence that the voucher is already issued, and Hermes preserves
+that state across follow-up turns. It does not move to new checkout or envelope
+delivery unless the customer explicitly requests a separately paid new voucher
+and public product facts verify that purchase path. The issued voucher remains
+eligible for its verified reservation and service-exchange self-service;
+service exchange changes the experience and is not conversion or reissue into a
+new personalized voucher document. An existing voucher cannot be personalized,
+manually reprinted, or reissued as a new paper/envelope gift voucher, and its
+value cannot fund another voucher. This prompt, public-facts, and model-authored
+evaluation coverage is not a runtime intent router, keyword/phrase detector,
+regex classifier, template selector, deterministic composer, scorer, mandatory
+question gate, or answer-replacing post-processing.
+
 Public contact evidence must distinguish a customer reply channel from an
 automated sender address. `info@skyvision.bg` is the written customer contact.
 `reservations@skyvision.bg` is an automated reservation-notification address,
