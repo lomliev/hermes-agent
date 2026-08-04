@@ -310,6 +310,85 @@ def test_issued_voucher_regift_boundary_keeps_service_exchange_available() -> No
     assert "not conversion/reissue into a new personalized voucher" in scenario["focus"]
 
 
+def test_issued_voucher_ownership_transfer_boundary_is_model_visible_without_internal_approver() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+
+    for required in (
+        "Смяна на услуга ≠ прехвърляне на собственост",
+        "не махай ваучера от профила си за да го дадеш на друг",
+        "не предавай сериен номер като self-service трансфер",
+        "получателят не добавя ваучера в друг профил като supported flow",
+        "оригиналният купувач/имейл от поръчката",
+        "одобрение през официалния support процес",
+        "не назовавай вътрешен одобряващ човек",
+    ):
+        assert required in prompt
+    assert "Емил Ломлиев" not in prompt[prompt.index("Дата на валидност") :]
+
+    lifecycle = support["vouchers"]["issued_voucher_regift_lifecycle"]
+    transfer = lifecycle["ownership_transfer_boundary"]
+    assert transfer["service_exchange_authorizes_transfer_or_regift"] is False
+    assert transfer["remove_from_profile_serial_handoff_recipient_add_flow_supported"] is False
+    assert transfer["recipient_can_authorize_transfer"] is False
+    assert transfer["requires_verified_original_buyer_or_order_email_request"] is True
+    assert transfer["requires_official_support_approval"] is True
+    assert transfer["customer_visible_approver_identity"] is None
+    assert transfer["support_escalation_reissues_new_personalized_paper_voucher"] is False
+
+    presentation = lifecycle["same_voucher_informal_presentation"]
+    assert presentation["allowed_if_customer_already_has_original_document"] is True
+    assert presentation["changes_ownership_or_recipient_authorization"] is False
+    assert presentation["changes_service_or_validity"] is False
+    assert presentation["creates_new_official_paper_voucher_or_envelope"] is False
+
+    assert "Issued-voucher ownership transfer boundary" in architecture
+    assert "service exchange changes value usage, not ownership authority" in architecture
+    assert "verified original-buyer/order-email request" in architecture
+    assert "internal approver identity" in architecture
+
+    principle = next(
+        case for case in cases if case["id"] == "issued_voucher_ownership_transfer_boundary"
+    )
+    assert principle["source_threads"] == ["caa71cdd-f12b-5df1-8d3b-6b30097de873"]
+    assert "not self-service" in principle["principle"]
+    assert "verified original-buyer request" in principle["principle"]
+    assert "without naming an internal approver" in principle["principle"]
+
+
+def test_exact_failed_regift_multiturn_scenario_is_in_compare_fixtures() -> None:
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+    scenario = next(
+        case
+        for case in scenarios
+        if case["id"] == "issued_voucher_ownership_transfer_multiturn_sc7"
+    )
+
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Когато правя резервация, ваучерът е валиден до 13.10.2026 г., но не искам да определям дата. Как да постъпя?",
+        },
+        {
+            "role": "user",
+            "content": "Да, но искам да го изкарам като подарък в плик.",
+        },
+        {
+            "role": "user",
+            "content": "Този ваучер е подарен на мен, но аз не искам да го ползвам. Искам да го подаря на друг човек с друго преживяване и да изкарам ваучера на хартия.",
+        },
+    ]
+    assert scenario["message"] == "Как тогава мога да го подаря на друг човек?"
+    assert "SC7" in scenario["focus"]
+    assert "must not recommend service exchange + profile removal + serial handoff + recipient profile add" in scenario["focus"]
+    assert "current recipient cannot authorize it" in scenario["focus"]
+    assert "verified original-buyer request plus approval" in scenario["focus"]
+    assert "same-voucher informal presentation" in scenario["focus"]
+    assert "separate paid new physical gift purchase" in scenario["focus"]
+
+
 def test_loaded_voucher_compare_matrix_keeps_model_authored_qa_external() -> None:
     source = Path("scripts/skyai_v2_compare_matrix.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -330,6 +409,7 @@ def test_loaded_voucher_compare_matrix_keeps_model_authored_qa_external() -> Non
         "existing_voucher_gift_path_ambiguous",
         "issued_voucher_regift_lifecycle_envelope_followup",
         "issued_voucher_service_exchange_still_allowed",
+        "issued_voucher_ownership_transfer_multiturn_sc7",
     )
     for scenario_id in task_scenario_ids:
         assert scenario_id not in runtime_source
@@ -339,6 +419,10 @@ def test_loaded_voucher_compare_matrix_keeps_model_authored_qa_external() -> Non
         "_claims_" + "existing_voucher_can_buy_another",
         "_detects_" + "issued_voucher_regift",
         "_classifies_" + "voucher_lifecycle",
+        "_detects_" + "ownership_transfer",
+        "_scores_" + "regift_answer",
+        "_routes_" + "voucher_transfer",
+        "_renders_" + "transfer_template",
     )
     for helper_name in forbidden_helpers:
         assert helper_name not in source
