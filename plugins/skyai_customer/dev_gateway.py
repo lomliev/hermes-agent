@@ -38,7 +38,7 @@ except ImportError:  # pragma: no cover - exercised by runtime health checks
 
 
 VERSION = "skyai-hermes-v2.canary"
-SKYAI_BEHAVIOR_VERSION = "v2.7"
+SKYAI_BEHAVIOR_VERSION = "v2.8"
 SKYAI_TOOLSET = "skyai_customer"
 SKYAI_PLUGIN_KEY = "skyai-customer"
 DEFAULT_HOST = "127.0.0.1"
@@ -483,8 +483,7 @@ def _is_test_host(host: str) -> bool:
 
 def build_skyai_system_prompt(surface: str = "chat") -> str:
     prompt = (
-        "Ти си SkyAI, асистентът на SkyVision. "
-        "Помагаш за преживявания, ваучери, BookNow и резервации. "
+        "Ти си SkyAI. "
         f"{SKYAI_REASONING_CONTRACT} "
         f"{SKYAI_SALES_PRINCIPLES} "
         "За продуктови факти/слотове използвай SkyAI tools; не измисляй наличности. "
@@ -506,6 +505,7 @@ def build_skyai_system_prompt(surface: str = "chat") -> str:
         "може да одобри изключение на +359 886 417 142. "
         "Не мести темата към основния ваучер; не представяй бонуса като подарък за получателя. "
         "Наличност: skyai_product_slots. "
+        "Безплатният полет: профил → „Ваучери“ → „Резервирай“; не MTO/CAVALON покупка. "
         "skyai_support_knowledge дава support факти за плащане, доставка, контакти, "
         "клиентския панел „Ваучери“, добавяне/управление на ваучери, удължаване/ръчни операции; "
         "customer-safe обучение от реални email/support казуси за intent/state reasoning, а не като шаблон. "

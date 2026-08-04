@@ -158,6 +158,34 @@ def evaluate_side(scenario: dict[str, Any], side: dict[str, Any]) -> dict[str, A
             ),
         ):
             issues.append("weak_booknow_refund_may_language")
+    elif scenario_id == "free_panoramic_reservation_process":
+        if not (
+            _has_any(reply, ("профил", "профила"))
+            and _has_any(reply, ("ваучери", "ваучер"))
+            and "резервирай" in reply
+            and _has_any(reply, ("свободен", "свободни", "таймслот", "час"))
+            and _has_any(reply, ("онлайн", "завърш"))
+        ):
+            issues.append("missing_profile_vouchers_reserve_flow")
+        if not _has_any(reply, ("да", "нужна", "трябва", "предварителна резервация", "изисква резервация")):
+            issues.append("missing_advance_reservation_required_yes")
+        if not (_has_any(reply, ("booknow", "букнау")) and _has_any(reply, ("след изпълнение", "след като бъде изпълн", "след основната"))):
+            issues.append("missing_booknow_unlock_after_main_service")
+        if not _has_any(reply, ("24 часа", "24ч", "24 ч")):
+            issues.append("missing_24h_reservation_boundary")
+        if not _has_any(reply, ("72 часа", "72ч", "72 ч")):
+            issues.append("missing_72h_cancellation_boundary")
+        if not (_has_any(reply, ("лошо време", "форсмажор", "метеоролог")) and _has_any(reply, ("нов", "друг", "свободен", "таймслот"))):
+            issues.append("missing_weather_rebooking_flow")
+        if _cards_contain_any(cards, ("mto-sport", "mto sport", "cavalon")) or _has_any(
+            reply,
+            ("mto-sport", "mto sport", "cavalon", "кавалон"),
+        ):
+            issues.append("recommends_paid_campaign_detour_product")
+        if _has_any(reply, ("свържете се с пилота", "свържи се с пилота", "контакт с пилота", "пишете на пилота")):
+            issues.append("presents_pilot_contact_as_normal_booking")
+        if _has_any(reply, ("10-15 мин", "10–15 мин", "10 - 15 мин", "15 минути по-рано", "минути по-рано")):
+            issues.append("invents_early_arrival_rule")
     elif scenario_id == "payment_methods":
         for required in ("карта", "easypay", "наложен"):
             if required not in reply:

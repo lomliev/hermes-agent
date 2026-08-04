@@ -158,6 +158,36 @@ def test_evaluate_booknow_refund_language_prefers_will_be_refunded() -> None:
     assert "weak_booknow_refund_may_language" in result["issues"]
 
 
+def test_evaluate_free_panoramic_reservation_rejects_paid_product_detour() -> None:
+    scenario = {"id": "free_panoramic_reservation_process"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Изберете MTO-Sport или CAVALON, свържете се с пилота и елате 10-15 минути по-рано."
+            ),
+            "cards": [
+                {"title": "Полет с жирокоптер MTO-Sport", "public_url": "https://skyvision.bg/подарък/полет-с-жирокоптер/mto-sport/"},
+                {"title": "Полет с автожир CAVALON", "public_url": "https://skyvision.bg/подарък/полет-с-жирокоптер/cavalon/"},
+            ],
+        },
+    )
+
+    assert result["issues"] == [
+        "missing_profile_vouchers_reserve_flow",
+        "missing_advance_reservation_required_yes",
+        "missing_booknow_unlock_after_main_service",
+        "missing_24h_reservation_boundary",
+        "missing_72h_cancellation_boundary",
+        "missing_weather_rebooking_flow",
+        "recommends_paid_campaign_detour_product",
+        "presents_pilot_contact_as_normal_booking",
+        "invents_early_arrival_rule",
+    ]
+
+
 def test_evaluate_voucher_merge_rejects_self_service_merge_flow() -> None:
     scenario = {"id": "voucher_merge"}
 
