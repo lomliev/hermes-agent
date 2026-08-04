@@ -32,6 +32,72 @@
     "focus": "existing voucher redemption with card top-up: reject categorical yes; no new free-flight campaign entitlement from top-up alone; qualifying new voucher/direct BookNow only under verified rules; date/time does not prove BookNow; original buyer/order email may own any pre-existing bonus; clarify unknown purchase origin"
   },
   {
+    "id": "loaded_voucher_state_clear_to_buy_gift_voucher",
+    "message": "Отворил съм продукта за двама, но вместо Купи ваучер виждам само използване на ваучер/Резервирай. Искам да купя отделно нов подаръчен ваучер.",
+    "history": [
+      {
+        "role": "user",
+        "content": "Вече имам зареден ваучер в профила и бях започнал да го използвам."
+      }
+    ],
+    "focus": "currently loaded existing voucher state: diagnose loaded voucher path, Моят ваучер/profile Ваучери -> Изчисти използването -> confirm, then return to product, choose the validated variant, and Купи ваучер for a separately paid new gift voucher; normal purchase restoration; no manual issuance and existing voucher cannot buy another voucher"
+  },
+  {
+    "id": "product_detail_buy_voucher_restored_after_clear",
+    "message": "Пише ми само Резервирай, значи ли че няма подаръчен ваучер и трябва вие ръчно да го издадете?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Изпращам линк към продукта: https://skyvision.bg/подарък/офроуд-атв-под-наем/семейна-офроуд-разходка-с-атв/"
+      },
+      {
+        "role": "user",
+        "content": "Искам да платя отделно нов подаръчен ваучер, но не виждам откъде."
+      }
+    ],
+    "focus": "follow-up after product URL: use product-detail purchase facts and validated variants, Купи ваучер vs Резервирай; after loaded-voucher clearing do not deny normal purchase or infer from customer text alone"
+  },
+  {
+    "id": "existing_voucher_cannot_buy_new_voucher",
+    "message": "Мога ли със стойността от съществуващия ми ваучер да купя нов подаръчен ваучер за друг човек?",
+    "history": [],
+    "focus": "clearly using existing voucher value: it cannot buy another voucher and is instead used for an experience reservation under verified voucher rules; no manual voucher issuance"
+  },
+  {
+    "id": "separate_paid_new_gift_voucher_purchase",
+    "message": "Искам да платя отделно нов подаръчен ваучер за този продукт, не с моя стар ваучер. Как да го купя?",
+    "history": [],
+    "focus": "clearly separately paid new gift-voucher purchase: use validated product variant and Купи ваучер when strict product facts support it; do not confuse this with existing-voucher redemption"
+  },
+  {
+    "id": "existing_voucher_gift_path_ambiguous",
+    "message": "Имам ваучер на стойност и искам да го направя подаръчен за този продукт, виждам само бутон за резервация. Как става?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Искам да подаря преживяването, но вече имам ваучер на стойност."
+      }
+    ],
+    "focus": "ambiguous route: ask one concise clarification or explain separately paid new gift voucher vs using existing voucher value; do not assume, invent manual issuance, or infer product availability from customer-described UI"
+  },
+  {
+    "id": "issued_voucher_regift_lifecycle_envelope_followup",
+    "message": "Може ли този ваучер да стане нов подаръчен ваучер в плик за друг човек?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Имам ваучер, който е валиден до 13.10.2026, но още не искам да избирам дата за резервация."
+      }
+    ],
+    "focus": "validity-through date means already issued; preserve issued-voucher state across the follow-up; no new checkout/envelope delivery promise, manual personalization/reprint, reissue, or use as funds for another voucher"
+  },
+  {
+    "id": "issued_voucher_service_exchange_still_allowed",
+    "message": "Ваучерът е вече издаден; мога ли да използвам „Замени услуга“ и да избера друго преживяване?",
+    "history": [],
+    "focus": "legitimate service exchange remains available for the issued voucher and changes the experience; it is not conversion/reissue into a new personalized voucher document"
+  },
+  {
     "id": "massage_sofia_budget",
     "message": "Търся масаж за двама в София до 100 евро. Какво ще ми предложиш?",
     "focus": "catalog relevance, cards, EUR pricing, budget taste"
