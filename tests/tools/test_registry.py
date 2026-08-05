@@ -1,11 +1,18 @@
 """Tests for the central tool registry."""
 
+import inspect
 import json
 import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
+import tools.registry as registry_module
+from tools.registry import (
+    ToolRegistry,
+    _is_builtin_tool_candidate,
+    _module_registers_tools,
+    discover_builtin_tools,
+)
 import logging
 
 
@@ -505,8 +512,7 @@ class TestBuiltinDiscovery:
         expected = [
             f"tools.{path.stem}"
             for path in sorted(tools_dir.glob("*.py"))
-            if path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
-            and _module_registers_tools(path)
+            if _is_builtin_tool_candidate(path) and _module_registers_tools(path)
         ]
 
         with patch("tools.registry.importlib.import_module"):
@@ -549,6 +555,65 @@ class TestBuiltinDiscovery:
 
         assert imported == ["tools.alpha"]
         mock_import.assert_called_once_with("tools.alpha")
+
+    def test_skips_hidden_appledouble_candidates_and_keeps_visible_tools(self, tmp_path):
+        tools_dir = tmp_path / "tools"
+        tools_dir.mkdir()
+        (tools_dir / "__init__.py").write_text("", encoding="utf-8")
+        (tools_dir / "ok_tool.py").write_text(
+            "from tools.registry import registry\n"
+            "registry.register(name='ok_tool', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        # Root-cause shape from issue 335: macOS AppleDouble/hidden binary files
+        # named like Python modules must never be decoded or imported as tools.
+        (tools_dir / ".___init__.py").write_bytes(
+            b"\x00\x05\x16\x07\x00\x02binary-appledouble\xa3\x00registry.register"
+        )
+        (tools_dir / "._bad_tool.py").write_bytes(
+            b"\x00\x05\x16\x07\x00\x02resource-fork\xa3\x00register"
+        )
+        (tools_dir / ".hidden_tool.py").write_text(
+            "from tools.registry import registry\n"
+            "registry.register(name='hidden_tool', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+
+        with patch("tools.registry.importlib.import_module") as mock_import:
+            imported = discover_builtin_tools(tools_dir)
+
+        assert imported == ["tools.ok_tool"]
+        mock_import.assert_called_once_with("tools.ok_tool")
+
+    def test_module_registers_tools_treats_visible_non_utf8_as_non_tool(self, tmp_path):
+        module_path = tmp_path / "bad_visible_tool.py"
+        module_path.write_bytes(
+            b"from tools.registry import registry\n\x00\xa3registry.register("
+        )
+
+        assert _module_registers_tools(module_path) is False
+
+    def test_module_registers_tools_preserves_valid_utf8_visible_behavior(self, tmp_path):
+        registering = tmp_path / "registering_tool.py"
+        registering.write_text(
+            "from tools.registry import registry\n"
+            "registry.register(name='registering_tool', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+        helper = tmp_path / "helper.py"
+        helper.write_text(
+            "def build():\n"
+            "    from tools.registry import registry\n"
+            "    registry.register(name='helper', toolset='x', schema={}, handler=lambda *_a, **_k: '{}')\n",
+            encoding="utf-8",
+        )
+
+        assert _module_registers_tools(registering) is True
+        assert _module_registers_tools(helper) is False
+
+    def test_registry_source_does_not_use_permissive_decode_replacement(self):
+        assert "errors=\"replace\"" not in inspect.getsource(registry_module)
+        assert "errors='replace'" not in inspect.getsource(registry_module)
 
 
 class TestEmojiMetadata:

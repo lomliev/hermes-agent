@@ -52,7 +52,7 @@ def _module_registers_tools(module_path: Path) -> bool:
     """
     try:
         source = module_path.read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         return False
     if "registry" not in source or "register" not in source:
         return False
@@ -62,6 +62,15 @@ def _module_registers_tools(module_path: Path) -> bool:
         return False
 
     return any(_is_registry_register_call(stmt) for stmt in tree.body)
+
+
+def _is_builtin_tool_candidate(path: Path) -> bool:
+    """Return True when *path* may be a built-in tool module source file."""
+    return (
+        path.suffix == ".py"
+        and not path.name.startswith(".")
+        and path.name not in {"__init__.py", "registry.py", "mcp_tool.py"}
+    )
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
@@ -82,7 +91,7 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
 
     module_names: List[str] = []
     for path in sorted(tools_path.glob("*.py")):
-        if path.name in {"__init__.py", "registry.py", "mcp_tool.py"}:
+        if not _is_builtin_tool_candidate(path):
             continue
         abs_path = str(path.resolve())
         try:
