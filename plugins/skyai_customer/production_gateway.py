@@ -33,6 +33,7 @@ AUTH_TOKEN_ENV = "SKYAI_V2_CANARY_TOKEN"
 PRODUCTION_BIND_HOST_ENV = "SKYAI_PRODUCTION_BIND_HOST"
 TRUSTED_PROXY_CIDR_ENV = "SKYAI_TRUSTED_PROXY_CIDR"
 BUILD_COMMIT_ENV = dev_gateway.BUILD_COMMIT_ENV
+BEHAVIOR_VERSION_ENV = dev_gateway.BEHAVIOR_VERSION_ENV
 DISCORD_BOT_TOKEN_ENV = "SKYAI_DISCORD_BOT_TOKEN"
 DISCORD_DATABASE_URL_ENV = "SKYAI_DISCORD_MIRROR_DATABASE_URL"
 DISCORD_ENABLED_ENV = "SKYAI_DISCORD_MIRROR_ENABLED"
@@ -218,6 +219,7 @@ def load_production_settings(
         auth_token=_optional_exact_secret_env(environ, AUTH_TOKEN_ENV),
         trusted_proxy_cidr=trusted_proxy_cidr,
         version=PRODUCTION_VERSION,
+        behavior_version=dev_gateway.resolve_behavior_version(environ=environ),
         discord_mirror_enabled=True,
         discord_mirror_bot_token=_required_exact_env(
             environ,

@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+from typing import Any
 import sys
 import time
 from types import SimpleNamespace
@@ -16,7 +17,10 @@ import utils
 
 
 def settings(tmp_path: Path, **overrides) -> dev_gateway.CanarySettings:
-    values = {"profile_home": tmp_path / "profiles" / "skyai-v2-dev"}
+    values: dict[str, Any] = {
+        "profile_home": tmp_path / "profiles" / "skyai-v2-dev",
+        "build_commit": "test-build-commit",
+    }
     values.update(overrides)
     return dev_gateway.CanarySettings(**values)
 
@@ -323,7 +327,11 @@ def test_main_preserves_exact_env_bytes_without_truthy_defaulting(
         return object()
 
     monkeypatch.setattr(dev_gateway, "create_app", fake_create_app)
-    monkeypatch.setattr(dev_gateway.web, "run_app", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        dev_gateway,
+        "web",
+        SimpleNamespace(run_app=lambda *_args, **_kwargs: None),
+    )
     monkeypatch.setenv("SKYAI_COMPARE_PROD_BASE_URL", " https://prod.invalid ")
     monkeypatch.setenv("SKYAI_COMPARE_PROD_PATH", " /exact ")
     monkeypatch.setenv("SKYAI_VOICE_BACKEND_TARGET", "")
@@ -376,6 +384,90 @@ def test_resolve_build_commit_preserves_explicit_and_env_bytes(
 
     assert dev_gateway.resolve_build_commit() == " from-env\n"
     assert dev_gateway.resolve_build_commit(" explicit\t") == " explicit\t"
+
+
+def test_resolve_behavior_version_release_file_is_used(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(dev_gateway.BEHAVIOR_VERSION_ENV, raising=False)
+    (tmp_path / dev_gateway.BEHAVIOR_VERSION_FILE).write_text("v2.18", encoding="utf-8")
+
+    assert dev_gateway.resolve_behavior_version() == "v2.18"
+
+
+def test_resolve_behavior_version_precedence(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv(dev_gateway.BEHAVIOR_VERSION_ENV, "v2.17")
+    (tmp_path / dev_gateway.BEHAVIOR_VERSION_FILE).write_text("v2.16", encoding="utf-8")
+
+    assert dev_gateway.resolve_behavior_version("v2.18") == "v2.18"
+    assert dev_gateway.resolve_behavior_version() == "v2.17"
+    monkeypatch.delenv(dev_gateway.BEHAVIOR_VERSION_ENV, raising=False)
+    assert dev_gateway.resolve_behavior_version() == "v2.16"
+
+
+def test_resolve_behavior_version_empty_or_missing_file_falls_back_to_default(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(dev_gateway.BEHAVIOR_VERSION_ENV, raising=False)
+
+    assert dev_gateway.resolve_behavior_version() == dev_gateway.SKYAI_BEHAVIOR_VERSION
+    (tmp_path / dev_gateway.BEHAVIOR_VERSION_FILE).write_text("", encoding="utf-8")
+    assert dev_gateway.resolve_behavior_version() == dev_gateway.SKYAI_BEHAVIOR_VERSION
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        218,
+        "",
+        " v2.18",
+        "v2.18 ",
+        "v2.18\n",
+        "2.18",
+        "v0",
+        "v-1",
+        "v2",
+        "v2.18.1",
+        "v02.18",
+        "v2.01",
+        "v2beta",
+        "release-v2",
+        "v" + "1" * 33,
+    ],
+)
+def test_resolve_behavior_version_rejects_invalid_values(value) -> None:
+    if value == "":
+        assert dev_gateway.resolve_behavior_version(value) == dev_gateway.SKYAI_BEHAVIOR_VERSION
+        return
+    with pytest.raises(ValueError, match="behavior version"):
+        dev_gateway.resolve_behavior_version(value)
+
+
+def test_resolve_behavior_version_accepts_exact_release_version() -> None:
+    assert dev_gateway.resolve_behavior_version("v2.18") == "v2.18"
+    assert dev_gateway.resolve_behavior_version("v18.1") == "v18.1"
+
+
+def test_main_uses_resolved_behavior_version(monkeypatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def fake_create_app(canary_settings):
+        captured["settings"] = canary_settings
+        return object()
+
+    monkeypatch.setattr(dev_gateway, "create_app", fake_create_app)
+    monkeypatch.setattr(
+        dev_gateway,
+        "web",
+        SimpleNamespace(run_app=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / dev_gateway.BEHAVIOR_VERSION_FILE).write_text("v2.18", encoding="utf-8")
+
+    assert dev_gateway.main(["--dev", "--profile-home", str(tmp_path / "profile")]) == 0
+    assert captured["settings"].behavior_version == "v2.18"
 
 
 def test_extract_message_preserves_canonical_authored_text_exactly() -> None:
@@ -530,10 +622,12 @@ async def test_build_chat_response_dry_run_returns_fab_compatible_shape(tmp_path
     assert response["status"] == "ok"
     assert response["version"] == dev_gateway.VERSION
     assert response["behavior_version"] == dev_gateway.SKYAI_BEHAVIOR_VERSION
+    assert response["build_commit"] == "test-build-commit"
     assert response["conversation_id"] == "c1"
     assert response["cards"] == []
     assert response["trace"]["runtime"] == "hermes_agent"
     assert response["trace"]["behavior_version"] == dev_gateway.SKYAI_BEHAVIOR_VERSION
+    assert response["trace"]["build_commit"] == "test-build-commit"
     assert response["trace"]["toolset"] == "skyai_customer"
     assert response["trace"]["live_model"] is False
     assert "dry-run" in response["reply"]
