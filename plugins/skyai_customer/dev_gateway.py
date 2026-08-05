@@ -25,7 +25,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from textwrap import dedent
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Mapping
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlparse
 from urllib.request import Request, urlopen
@@ -467,18 +467,24 @@ def _validate_behavior_version(value: Any) -> str:
     return value
 
 
-def resolve_behavior_version(explicit: str = "") -> str:
+def resolve_behavior_version(
+    explicit: str = "",
+    *,
+    environ: Mapping[str, str] | None = None,
+    cwd: Path | None = None,
+) -> str:
     if type(explicit) is not str:
         raise ValueError("behavior version must be a string")
     if explicit:
         return _validate_behavior_version(explicit)
-    env_value = os.getenv(BEHAVIOR_VERSION_ENV)
-    if env_value:
-        return _validate_behavior_version(env_value)
+
+    selected_environ = os.environ if environ is None else environ
+    if BEHAVIOR_VERSION_ENV in selected_environ:
+        return _validate_behavior_version(selected_environ[BEHAVIOR_VERSION_ENV])
+
+    selected_cwd = Path.cwd() if cwd is None else cwd
     try:
-        file_value = (Path.cwd() / BEHAVIOR_VERSION_FILE).read_text(
-            encoding="utf-8"
-        )
+        file_value = (selected_cwd / BEHAVIOR_VERSION_FILE).read_text(encoding="utf-8")
     except OSError:
         return SKYAI_BEHAVIOR_VERSION
     if not file_value:

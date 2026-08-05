@@ -219,9 +219,7 @@ def load_production_settings(
         auth_token=_optional_exact_secret_env(environ, AUTH_TOKEN_ENV),
         trusted_proxy_cidr=trusted_proxy_cidr,
         version=PRODUCTION_VERSION,
-        behavior_version=dev_gateway.resolve_behavior_version(
-            environ.get(BEHAVIOR_VERSION_ENV, "")
-        ),
+        behavior_version=dev_gateway.resolve_behavior_version(environ=environ),
         discord_mirror_enabled=True,
         discord_mirror_bot_token=_required_exact_env(
             environ,
