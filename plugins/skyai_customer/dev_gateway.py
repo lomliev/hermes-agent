@@ -19,6 +19,7 @@ import json
 import ipaddress
 import math
 import os
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -58,6 +59,9 @@ RUNTIME_MODES = frozenset(
     {RUNTIME_MODE_DEVELOPMENT, RUNTIME_MODE_PRODUCTION}
 )
 SKYAI_BEHAVIOR_VERSION = "v2.16"
+BEHAVIOR_VERSION_ENV = "SKYAI_V2_BEHAVIOR_VERSION"
+BEHAVIOR_VERSION_FILE = ".skyai-behavior-version"
+BEHAVIOR_VERSION_PATTERN = re.compile(r"v[1-9][0-9]{0,15}\.[1-9][0-9]{0,15}")
 SKYAI_TOOLSET = "skyai_customer"
 SKYAI_PLUGIN_KEY = "skyai-customer"
 DEFAULT_HOST = "127.0.0.1"
@@ -242,6 +246,10 @@ def validate_settings(settings: CanarySettings) -> None:
         raise ValueError(
             "SkyAI runtime mode must exactly equal 'development' or 'production'"
         )
+    _validate_behavior_version(settings.behavior_version)
+    if settings.runtime_mode == RUNTIME_MODE_PRODUCTION:
+        if type(settings.build_commit) is not str or not settings.build_commit:
+            raise ValueError("Production requires a nonempty build commit")
     if type(settings.host) is not str or not settings.host:
         raise ValueError("SkyAI gateway host must be a nonempty string")
     if type(settings.port) is not int or not 1 <= settings.port <= 65535:
@@ -456,6 +464,36 @@ def resolve_build_commit(explicit: str = "") -> str:
         return (Path.cwd() / BUILD_COMMIT_FILE).read_text(encoding="utf-8")
     except OSError:
         return ""
+
+
+def _validate_behavior_version(value: Any) -> str:
+    if type(value) is not str:
+        raise ValueError("behavior version must be a string")
+    if BEHAVIOR_VERSION_PATTERN.fullmatch(value) is None:
+        raise ValueError(
+            "behavior version must exactly match 'v' plus positive "
+            "major.minor base-10 integers without leading zeros"
+        )
+    return value
+
+
+def resolve_behavior_version(explicit: str = "") -> str:
+    if type(explicit) is not str:
+        raise ValueError("behavior version must be a string")
+    if explicit:
+        return _validate_behavior_version(explicit)
+    env_value = os.getenv(BEHAVIOR_VERSION_ENV)
+    if env_value:
+        return _validate_behavior_version(env_value)
+    try:
+        file_value = (Path.cwd() / BEHAVIOR_VERSION_FILE).read_text(
+            encoding="utf-8"
+        )
+    except OSError:
+        return SKYAI_BEHAVIOR_VERSION
+    if not file_value:
+        return SKYAI_BEHAVIOR_VERSION
+    return _validate_behavior_version(file_value)
 
 
 def extract_message(payload: dict[str, Any]) -> str:
@@ -2024,6 +2062,7 @@ async def build_chat_response(
             "reason": str(exc),
             "version": settings.version,
             "behavior_version": settings.behavior_version,
+            "build_commit": settings.build_commit,
         }
         if isinstance(payload.get("conversation_id"), str) and payload["conversation_id"]:
             response["conversation_id"] = payload["conversation_id"]
@@ -2034,6 +2073,7 @@ async def build_chat_response(
             "error": "empty_message",
             "version": settings.version,
             "behavior_version": settings.behavior_version,
+            "build_commit": settings.build_commit,
             "conversation_id": conversation_id,
         }
 
@@ -2060,12 +2100,14 @@ async def build_chat_response(
         "status": "error" if runner_failed else "ok",
         "version": settings.version,
         "behavior_version": settings.behavior_version,
+        "build_commit": settings.build_commit,
         "conversation_id": conversation_id,
         "reply": reply,
         "cards": cards,
         "trace": {
             "runtime": "hermes_agent",
             "behavior_version": settings.behavior_version,
+            "build_commit": settings.build_commit,
             "profile_home": str(settings.profile_home),
             "toolset": SKYAI_TOOLSET,
             "live_model": settings.live_model,
@@ -2252,6 +2294,7 @@ async def build_voice_turn_response(
             "error": "invalid_voice_backend_target",
             "version": settings.version,
             "behavior_version": settings.behavior_version,
+            "build_commit": settings.build_commit,
             "contract_version": voice_contract.VOICE_CONTRACT_VERSION,
             "call_id": call_id,
             "conversation_id": conversation_id,
@@ -2271,6 +2314,7 @@ async def build_voice_turn_response(
             "trace": {
                 "runtime": "skyai_voice_adapter",
                 "behavior_version": settings.behavior_version,
+                "build_commit": settings.build_commit,
                 "contract_version": voice_contract.VOICE_CONTRACT_VERSION,
                 "backend_target": target,
                 "raw_audio_stored": False,
@@ -2535,6 +2579,7 @@ def _voice_response(
     trace = {
         "runtime": "skyai_voice_adapter",
         "behavior_version": settings.behavior_version,
+        "build_commit": settings.build_commit,
         "contract_version": voice_contract.VOICE_CONTRACT_VERSION,
         "backend_target": _voice_backend_target(payload, settings),
         "raw_audio_stored": False,
@@ -2563,6 +2608,7 @@ def _voice_response(
         "status": "ok",
         "version": settings.version,
         "behavior_version": settings.behavior_version,
+        "build_commit": settings.build_commit,
         "contract_version": voice_contract.VOICE_CONTRACT_VERSION,
         "call_id": call_id,
         "conversation_id": conversation_id,
@@ -3944,6 +3990,7 @@ async def build_compare_response(
             "error": "compare_prod_not_configured",
             "version": settings.version,
             "behavior_version": settings.behavior_version,
+            "build_commit": settings.build_commit,
         }
     dev_response = await build_chat_response(payload, settings, agent_runner)
     prod_caller = prod_caller or _call_prod_skyai
@@ -3962,6 +4009,7 @@ async def build_compare_response(
         "status": "ok",
         "version": settings.version,
         "behavior_version": settings.behavior_version,
+        "build_commit": settings.build_commit,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "question": extract_message(payload),
         "dev_v2": _compact_compare_side(dev_response),
@@ -4178,6 +4226,7 @@ def create_app(
                 ),
                 "version": settings.version,
                 "behavior_version": settings.behavior_version,
+                "build_commit": settings.build_commit,
             },
             status=503,
         )
@@ -4195,6 +4244,7 @@ def create_app(
                     "reason": str(exc),
                     "version": settings.version,
                     "behavior_version": settings.behavior_version,
+                    "build_commit": settings.build_commit,
                 },
                 status=400,
             )
@@ -4215,6 +4265,7 @@ def create_app(
                     "reason": str(exc),
                     "version": settings.version,
                     "behavior_version": settings.behavior_version,
+                    "build_commit": settings.build_commit,
                 },
                 status=400,
             )
@@ -4351,12 +4402,12 @@ def create_app(
             {
                 "version": settings.version,
                 "behavior_version": settings.behavior_version,
+                "build_commit": settings.build_commit,
                 "runtime": "hermes_agent",
                 "runtime_mode": settings.runtime_mode,
                 "profile_home": str(settings.profile_home),
                 "toolset": SKYAI_TOOLSET,
                 "live_model": settings.live_model,
-                "build_commit": settings.build_commit,
                 "implementation_markers": [DISCORD_CONFIGURED_SURFACE_MIRROR_MARKER],
             }
         )
@@ -4390,6 +4441,7 @@ def create_app(
                     "error": "agent_runtime_error",
                     "version": settings.version,
                     "behavior_version": settings.behavior_version,
+                    "build_commit": settings.build_commit,
                     "reason": sanitize_runtime_error(
                         exc,
                         registered_secrets=_settings_registered_secrets(settings),
@@ -4480,6 +4532,7 @@ def create_app(
                     "error": "voice_adapter_error",
                     "version": settings.version,
                     "behavior_version": settings.behavior_version,
+                    "build_commit": settings.build_commit,
                     "reason": sanitize_runtime_error(
                         exc,
                         registered_secrets=_settings_registered_secrets(settings),
@@ -4672,6 +4725,7 @@ def main(argv: list[str] | None = None) -> int:
             DEFAULT_COMPARE_PROD_PATH,
         ),
         build_commit=resolve_build_commit(),
+        behavior_version=resolve_behavior_version(),
         voice_backend_target=os.getenv(
             "SKYAI_VOICE_BACKEND_TARGET",
             DEFAULT_VOICE_BACKEND_TARGET,
