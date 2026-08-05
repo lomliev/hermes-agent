@@ -34,6 +34,42 @@ def production_env() -> dict[str, str]:
     }
 
 
+
+
+def test_load_production_settings_uses_behavior_env(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    environ = production_env()
+    environ[production_gateway.BEHAVIOR_VERSION_ENV] = "v2.18"
+    (tmp_path / dev_gateway.BEHAVIOR_VERSION_FILE).write_text("v2.17", encoding="utf-8")
+
+    settings = production_gateway.load_production_settings(environ)
+
+    assert settings.behavior_version == "v2.18"
+
+
+def test_load_production_settings_uses_release_behavior_file(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv(dev_gateway.BEHAVIOR_VERSION_ENV, raising=False)
+    (tmp_path / dev_gateway.BEHAVIOR_VERSION_FILE).write_text("v2.18", encoding="utf-8")
+
+    settings = production_gateway.load_production_settings(production_env())
+
+    assert settings.behavior_version == "v2.18"
+
+
+def test_validate_settings_rejects_empty_production_build_commit(tmp_path) -> None:
+    with pytest.raises(ValueError, match="build commit"):
+        dev_gateway.validate_settings(
+            dev_gateway.CanarySettings(
+                profile_home=tmp_path,
+                runtime_mode=dev_gateway.RUNTIME_MODE_PRODUCTION,
+                host="10.80.0.4",
+                allow_public_bind=True,
+                trusted_proxy_cidr="10.80.2.0/28",
+                live_model=True,
+            )
+        )
+
 def test_load_production_settings_is_live_durable_and_exact() -> None:
     environ = production_env()
     environ.update(
