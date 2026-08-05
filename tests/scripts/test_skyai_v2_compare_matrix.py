@@ -243,6 +243,99 @@ def test_evaluate_reservation_contact_rejects_automated_sender() -> None:
     ]
 
 
+def test_evaluate_reservation_voucher_path_rejects_direct_booknow_assumption() -> None:
+    scenario = {"id": "reservation_voucher_path_ambiguity"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Отвори продукта, избери Резервирай/BookNow, маркирай участниците, "
+                "избери свободен слот и плати с карта. Инструкторът ще се свърже "
+                "с теб до 24 часа."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result["issues"] == [
+        "assumes_direct_booknow_card_payment",
+        "missing_existing_voucher_path",
+        "missing_product_voucher_reservation_option",
+        "asserts_unsupported_booking_operations",
+    ]
+
+
+def test_evaluate_reservation_voucher_path_accepts_clarifying_branches() -> None:
+    scenario = {"id": "reservation_voucher_path_ambiguity"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Само да уточня: имаш ли ваучер, който искаш да използваш? "
+                "Ако имаш ваучер, влез в профил/Моите ваучери или избери опцията "
+                "Имам ваучер при резервацията на продукта. Ако си без ваучер, тогава "
+                "минаваш през Резервирай/BookNow и плащане с карта."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result == {"score": 100, "issues": []}
+
+
+def test_evaluate_campaign_gift_validity_rejects_time_inference_and_transfer_first() -> None:
+    scenario = {"id": "campaign_gift_time_validity"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Основният ваучер е бил подарен отдавна, затова неизползваният "
+                "подарък от кампанията е изтекъл. Можем направо да поискаме "
+                "ръчно прехвърляне."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result["issues"] == [
+        "missing_distinct_purchase_or_entitlement_date",
+        "missing_historical_campaign_terms",
+        "missing_validity_and_current_usability_check",
+        "conflates_unused_with_current_usability",
+        "declares_expiry_without_evidence",
+        "offers_transfer_or_exception_before_validity",
+    ]
+
+
+def test_evaluate_campaign_gift_validity_accepts_evidence_first_reasoning() -> None:
+    scenario = {"id": "campaign_gift_time_validity"}
+
+    result = matrix.evaluate_side(
+        scenario,
+        {
+            "status": "ok",
+            "reply": (
+                "Датата, когато е получен основният ваучер, не е непременно датата "
+                "на покупката или създаването на entitlement. Подаръкът от кампанията "
+                "може да има отделна валидност според условията на кампанията тогава. "
+                "Статус „неизползван“ не означава, че е използваем сега. Нужна е "
+                "проверка на точната дата, историческите условия, валидността, use state "
+                "и текущата използваемост. По наличното само е възможно да е изтекъл; "
+                "проверката е преди насоки за собственост, профил или прехвърляне."
+            ),
+            "cards": [],
+        },
+    )
+
+    assert result == {"score": 100, "issues": []}
+
+
 def test_evaluate_gift_wish_rejects_recipient_name_warning_template() -> None:
     scenario = {"id": "gift_wish_text"}
 

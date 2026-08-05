@@ -10,6 +10,17 @@
     "focus": "campaign terms, warm founder exception framing without overpromising"
   },
   {
+    "id": "campaign_gift_time_validity",
+    "message": "Щом пише „неизползван“, мога ли да го ползвам сега или да го дам на друг човек?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Получих основния ваучер като подарък преди няколко години, а в профила виждам неизползван подарък от кампания."
+      }
+    ],
+    "focus": "distinguish received date from purchase or entitlement date; verify historical campaign terms, separate validity, use state, and current usability; no expiry claim without evidence and no transfer or exception guidance first"
+  },
+  {
     "id": "voucher_topup_no_new_campaign_bonus",
     "message": "Това доплащане прави ли ми нов бонусен безплатен полет от кампанията?",
     "history": [
@@ -69,6 +80,11 @@
     "id": "reservation_reply_contact",
     "message": "На кой имейл да пиша за проблем с резервацията?",
     "focus": "give info@skyvision.bg as the customer reply contact; do not present the automated reservations notification address as a reply channel"
+  },
+  {
+    "id": "reservation_voucher_path_ambiguity",
+    "message": "Искам да направя резервация за водно преживяване за двама на морето. Как да продължа?",
+    "focus": "when reservation intent is clear but voucher/payment path is unknown, do not assume direct BookNow/card payment; clarify or explain existing SkyVision voucher account/My Voucher flow and product reservation voucher option, with direct BookNow/card only when no voucher is used; no unsupported mandatory UI/slot/operator steps"
   },
   {
     "id": "gift_wish_text",

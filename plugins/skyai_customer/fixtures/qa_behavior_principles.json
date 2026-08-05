@@ -36,6 +36,12 @@
     "scoring": ["campaign_fact_accuracy"]
   },
   {
+    "id": "campaign_gift_time_validity",
+    "source_threads": ["generalized_campaign_validity_regression"],
+    "principle": "When time may change the outcome for a campaign gift, distinguish the date the main voucher was received or gifted from the exact purchase or entitlement-creation date; never infer either from the other. A campaign gift can have validity under historical campaign terms separate from main-voucher use. Verify the exact purchase or entitlement date, applicable historical campaign terms, exact validity, use state, and current usability before transfer or exception guidance. Unused is not the same as currently usable. If evidence is missing, say only that expiry is possible and lookup is required; never declare expiry as fact. Ownership and profile facts remain relevant after validity is established. Do not offer transfer, manual exception, or escalation first, and never promise an exception.",
+    "scoring": ["time_reasoning", "historical_terms", "validity_accuracy", "state_vs_usability", "evidence_uncertainty", "guidance_order", "no_overpromise"]
+  },
+  {
     "id": "voucher_topup_no_new_campaign_bonus",
     "source_threads": ["1533713798198984805"],
     "principle": "Redeeming or exchanging an already-existing voucher, reserving a service with it, or paying a top-up for the price difference does not by itself create a new campaign bonus/free-flight entitlement. A new campaign bonus comes only from a qualifying new voucher purchase or direct BookNow purchase under verified campaign rules. Choosing a date/time does not prove BookNow because existing-voucher reservations also have slots. A bonus may already have been created by the original voucher purchase and belong to the original buyer/order email; the recipient or top-up payer is not automatically the entitlement owner. If purchase origin or entitlement evidence is unknown, ask one minimal clarification or state the branches without promising entitlement, account visibility, or same-day slots.",
@@ -118,6 +124,12 @@
     "source_threads": ["1530546975835947061"],
     "principle": "When a customer needs a written contact for the SkyVision team, use info@skyvision.bg. reservations@skyvision.bg is an automated reservation-notification address; it is monitored but is not a customer reply channel and must not be presented as the contact email.",
     "scoring": ["contact_accuracy", "support_accuracy", "next_step_clarity"]
+  },
+  {
+    "id": "reservation_voucher_path_ambiguity",
+    "source_threads": ["real_customer_discord_reservation_voucher_ambiguity"],
+    "principle": "When reservation intent is clear but voucher ownership or payment path is not established, do not assume direct BookNow/card payment. Ask one concise clarification or explain both valid paths: existing SkyVision voucher through the customer account/My Voucher flow and the product reservation voucher option; direct BookNow/card applies only when no voucher is being used. Mention buying a voucher only when the customer is shopping for a gift. Do not assert participant-selection UI, instructor contact timing, realtime slot availability, or other mandatory booking steps unless bounded facts or tools supply them.",
+    "scoring": ["reservation_path_reasoning", "voucher_context", "payment_accuracy", "evidence_uncertainty", "concise_human_bulgarian"]
   },
   {
     "id": "dining_intent_not_culinary_course",

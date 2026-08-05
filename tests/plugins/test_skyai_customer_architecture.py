@@ -32,7 +32,7 @@ def test_skyai_prompt_is_principle_based_not_script_pack() -> None:
 
     assert "Hermes мисли" in prompt
     assert "не е заповед какво да кажеш" in prompt
-    assert len(prompt) < 5200
+    assert len(prompt) < 6000
     assert "SkyAI sales playbook" not in prompt
     assert "do_not_say" not in prompt
     assert "customer_facing_flow" not in prompt
@@ -63,6 +63,60 @@ def test_skyai_prompt_treats_prior_turns_as_shared_context() -> None:
     assert "prompt-and-evaluation principle" in architecture
     assert "backend deduplication" in architecture
     assert "keyword rule" in architecture
+
+
+def test_campaign_gift_validity_precedes_transfer_reasoning() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+
+    assert "не извеждай едната дата от другата" in prompt
+    assert "историческите условия на конкретната кампания" in prompt
+    assert "отделно от ползването на основния ваучер" in prompt
+    assert "„Неизползван“ не означава „използваем сега“" in prompt
+    assert "само че изтичане е възможно и е нужна проверка" in prompt
+    assert "не обявявай подаръка за изтекъл" in prompt
+    assert "не предлагай прехвърляне, ръчно изключение или ескалация" in prompt
+    assert prompt.index(
+        "точната дата на покупката или създаването на entitlement"
+    ) < prompt.index(
+        "собственост, профил или прехвърляне"
+    )
+
+
+def test_campaign_gift_validity_is_general_evaluation_material() -> None:
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    principle = next(
+        case for case in principles if case["id"] == "campaign_gift_time_validity"
+    )
+    assert principle["source_threads"] == ["generalized_campaign_validity_regression"]
+    assert "received or gifted" in principle["principle"]
+    assert "purchase or entitlement-creation date" in principle["principle"]
+    assert "historical campaign terms" in principle["principle"]
+    assert "separate from main-voucher use" in principle["principle"]
+    assert "Unused is not the same as currently usable" in principle["principle"]
+    assert "expiry is possible" in principle["principle"]
+    assert "never declare expiry as fact" in principle["principle"]
+    assert "before transfer or exception guidance" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "campaign_gift_time_validity"
+    )
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": (
+                "Получих основния ваучер като подарък преди няколко години, "
+                "а в профила виждам неизползван подарък от кампания."
+            ),
+        }
+    ]
+    assert scenario["message"] == (
+        "Щом пише „неизползван“, мога ли да го ползвам сега "
+        "или да го дам на друг човек?"
+    )
+    assert "historical campaign terms" in scenario["focus"]
+    assert "no expiry claim without evidence" in scenario["focus"]
 
 
 def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
@@ -190,6 +244,37 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     assert principle["source_threads"] == ["1530546975835947061"]
     assert "use info@skyvision.bg" in principle["principle"]
     assert "not a customer reply channel" in principle["principle"]
+
+
+def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "не е ясно дали има/ползва ваучер" in prompt
+    assert "Моят ваучер/профил" in prompt
+    assert "директен BookNow/карта само без ваучер" in prompt
+    assert "Не твърди задължителни UI стъпки" in prompt
+    assert "tool/public evidence" in prompt
+    assert len(prompt) < 6000
+
+    assert "Reservation path ambiguity is Hermes reasoning context" in architecture
+    assert "not a runtime intent router" in architecture
+    assert "direct BookNow/card payment only when no voucher is being used" in architecture
+    assert "without bounded public facts or tool evidence" in architecture
+
+    principle = next(case for case in cases if case["id"] == "reservation_voucher_path_ambiguity")
+    assert principle["source_threads"] == ["real_customer_discord_reservation_voucher_ambiguity"]
+    assert "do not assume direct BookNow/card payment" in principle["principle"]
+    assert "existing SkyVision voucher" in principle["principle"]
+    assert "product reservation voucher option" in principle["principle"]
+    assert "buying a voucher only" in principle["principle"]
+    assert "unless bounded facts or tools supply them" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "reservation_voucher_path_ambiguity")
+    assert "voucher/payment path is unknown" in scenario["focus"]
+    assert "do not assume direct BookNow/card payment" in scenario["focus"]
 
 
 def test_campaign_tool_returns_fact_pack_not_customer_script() -> None:

@@ -53,6 +53,19 @@ issuer boundary when another issuer is explicit. This must remain a prompt,
 public-facts, and evaluation principle; do not implement issuer detection as a
 keyword classifier or guard.
 
+Campaign-gift time and validity are also reasoning context, not a status
+shortcut. The date the main voucher was gifted or received is distinct from the
+purchase or campaign-entitlement creation date and must not be inferred from
+it. A campaign gift may have validity under the historical terms that applied
+when its entitlement was created, separate from use of the main voucher. Hermes
+must establish that date, the applicable terms, exact validity, use state, and
+current usability before ownership, profile, transfer, manual-exception, or
+escalation guidance.
+`Unused` does not mean `currently usable`. Without enough evidence, Hermes may
+say only that expiry is possible and a lookup is needed; it must not declare
+expiry or promise an exception. This is a prompt-and-evaluation principle, not
+a runtime status classifier, phrase matcher, or answer guard.
+
 Existing-voucher top-up campaign entitlement is Hermes reasoning context, not a
 reservation-path classifier. A new campaign free-flight entitlement comes only
 from a qualifying new voucher purchase or direct BookNow purchase under verified
@@ -74,6 +87,15 @@ automated sender address. `info@skyvision.bg` is the written customer contact.
 `reservations@skyvision.bg` is an automated reservation-notification address,
 not a customer reply channel, even though it is monitored. This is canonical
 contact knowledge, not a response template.
+
+Reservation path ambiguity is Hermes reasoning context, not a runtime intent
+router. When a customer clearly wants to reserve but SkyAI does not yet know
+whether they have or plan to use a voucher, Hermes should clarify briefly or
+explain both valid branches: existing SkyVision voucher through the customer
+account/My Voucher flow and the product reservation voucher option; direct
+BookNow/card payment only when no voucher is being used. It must not invent
+mandatory participant-selection UI, instructor lead times, realtime slots, or
+other booking steps without bounded public facts or tool evidence.
 
 Dining intent vs culinary-course boundary is Hermes reasoning context, not a keyword classifier and not a category router. When a customer asks to dine, eat, have dinner, or find a restaurant, Hermes should use verified dining or restaurant evidence when available. A culinary, cooking, pastry, or dessert course is a participation/learning experience; it must not be presented as a dining or restaurant match merely because food is involved or because it is the nearest catalog item in the requested city. If no verified dining match is available, Hermes should say that honestly and ask whether a culinary course or workshop alternative is acceptable. This is a prompt-and-evaluation principle, not answer-replacing post-processing, template selection, keyword matching, or catalog routing.
 
