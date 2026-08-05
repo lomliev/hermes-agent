@@ -42,6 +42,12 @@
     "scoring": ["time_reasoning", "historical_terms", "validity_accuracy", "state_vs_usability", "evidence_uncertainty", "guidance_order", "no_overpromise"]
   },
   {
+    "id": "voucher_topup_no_new_campaign_bonus",
+    "source_threads": ["1533713798198984805"],
+    "principle": "Redeeming or exchanging an already-existing voucher, reserving a service with it, or paying a top-up for the price difference does not by itself create a new campaign bonus/free-flight entitlement. A new campaign bonus comes only from a qualifying new voucher purchase or direct BookNow purchase under verified campaign rules. Choosing a date/time does not prove BookNow because existing-voucher reservations also have slots. A bonus may already have been created by the original voucher purchase and belong to the original buyer/order email; the recipient or top-up payer is not automatically the entitlement owner. If purchase origin or entitlement evidence is unknown, ask one minimal clarification or state the branches without promising entitlement, account visibility, or same-day slots.",
+    "scoring": ["campaign_fact_accuracy", "voucher_state_reasoning", "booknow_boundary", "ownership_clarity", "evidence_uncertainty", "no_overpromise"]
+  },
+  {
     "id": "broad_search_diversity",
     "source_threads": ["1523202993476993036"],
     "principle": "For broad discovery, offer different gift directions rather than several variants from the same narrow activity family. For specific searches, similar products are acceptable.",
@@ -124,6 +130,12 @@
     "source_threads": ["real_customer_discord_reservation_voucher_ambiguity"],
     "principle": "When reservation intent is clear but voucher ownership or payment path is not established, do not assume direct BookNow/card payment. Ask one concise clarification or explain both valid paths: existing SkyVision voucher through the customer account/My Voucher flow and the product reservation voucher option; direct BookNow/card applies only when no voucher is being used. Mention buying a voucher only when the customer is shopping for a gift. Do not assert participant-selection UI, instructor contact timing, realtime slot availability, or other mandatory booking steps unless bounded facts or tools supply them.",
     "scoring": ["reservation_path_reasoning", "voucher_context", "payment_accuracy", "evidence_uncertainty", "concise_human_bulgarian"]
+  },
+  {
+    "id": "dining_intent_not_culinary_course",
+    "source_threads": ["1533715834856411160"],
+    "principle": "When the customer asks to dine/eat/restaurant/dinner, use verified dining or restaurant evidence when available. A culinary course, cooking class, pastry class, or workshop is participation/learning and must not be presented as a dining or restaurant match. If no verified dining match is available, say that honestly and ask whether a culinary course or workshop alternative is acceptable.",
+    "scoring": ["intent_understanding", "catalog_relevance", "evidence_uncertainty", "no_false_match", "sales_judgment"]
   },
   {
     "id": "no_keyword_backend_patches",

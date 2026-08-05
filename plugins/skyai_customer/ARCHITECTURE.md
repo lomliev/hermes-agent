@@ -66,6 +66,22 @@ say only that expiry is possible and a lookup is needed; it must not declare
 expiry or promise an exception. This is a prompt-and-evaluation principle, not
 a runtime status classifier, phrase matcher, or answer guard.
 
+Existing-voucher top-up campaign entitlement is Hermes reasoning context, not a
+reservation-path classifier. A new campaign free-flight entitlement comes only
+from a qualifying new voucher purchase or direct BookNow purchase under verified
+campaign rules. Redeeming or exchanging an already-existing voucher, reserving a
+service with it, or paying a card top-up for the price difference does not by
+itself create a new bonus entitlement. A concrete slot is not enough evidence:
+choosing a concrete date/time does not prove BookNow, because existing-voucher
+reservations also have date/time slots. A bonus may already have been created by
+the original voucher purchase and may belong to the original buyer/order email;
+the voucher recipient or top-up payer is not automatically the entitlement owner.
+When purchase origin or entitlement evidence is missing, Hermes should ask one
+minimal clarification or state the possible branches without promising
+entitlement, account visibility, or same-day slot availability. This is a
+prompt-and-evaluation principle, not answer-replacing post-processing, template
+selection, keyword matching, or a booking-intent router.
+
 Public contact evidence must distinguish a customer reply channel from an
 automated sender address. `info@skyvision.bg` is the written customer contact.
 `reservations@skyvision.bg` is an automated reservation-notification address,
@@ -80,6 +96,8 @@ account/My Voucher flow and the product reservation voucher option; direct
 BookNow/card payment only when no voucher is being used. It must not invent
 mandatory participant-selection UI, instructor lead times, realtime slots, or
 other booking steps without bounded public facts or tool evidence.
+
+Dining intent vs culinary-course boundary is Hermes reasoning context, not a keyword classifier and not a category router. When a customer asks to dine, eat, have dinner, or find a restaurant, Hermes should use verified dining or restaurant evidence when available. A culinary, cooking, pastry, or dessert course is a participation/learning experience; it must not be presented as a dining or restaurant match merely because food is involved or because it is the nearest catalog item in the requested city. If no verified dining match is available, Hermes should say that honestly and ask whether a culinary course or workshop alternative is acceptable. This is a prompt-and-evaluation principle, not answer-replacing post-processing, template selection, keyword matching, or catalog routing.
 
 ## What The Backend May Do
 
