@@ -312,6 +312,21 @@
     ]
   },
   {
+    "id": "product_detail_execution_period",
+    "source_threads": [
+      "case:product-99790-execution-period-detail-schedule"
+    ],
+    "principle": "For a specific service's annual execution period, distinguish when the service runs during the year from request-slot weekdays/hours and working periods. Use the matching current public product detail schedule as the authoritative execution-period fact. Slot evidence can describe requestability within that period, but must not replace or negate the product schedule. Campaign context may explain the customer's interest, but it must not override the product's own schedule. When the detail schedule is present, do not claim fixed months are absent or escalate to support merely because slot evidence does not contain months. When no detail schedule is present, answer with honest uncertainty rather than inventing months from slots or campaign context.",
+    "scoring": [
+      "service_context_use",
+      "detail_schedule_authority",
+      "execution_period_slot_distinction",
+      "campaign_context_precedence",
+      "no_false_absence_claim",
+      "direct_answer"
+    ]
+  },
+  {
     "id": "no_keyword_backend_patches",
     "source_threads": [
       "architecture"
