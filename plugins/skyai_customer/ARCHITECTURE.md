@@ -124,6 +124,8 @@ not proof; location, type, price, and weather differences remain explicit. This
 is a prompt-and-evaluation principle, not a response template, mandatory-question
 gate, runtime selection rule, or answer-replacing post-processing.
 
+Annual product execution period is Hermes reasoning context. For a specific service, the current public product-detail `schedule` is the authoritative annual execution-period fact. Request-slot and working-day/hour evidence describes requestability within the service period; it cannot replace or negate that schedule. Campaign context is secondary and cannot override the product's schedule. This is a prompt-and-evaluation tool-use principle, not a keyword classifier, phrase matcher, SKU hardcode, category router, answer template, mandatory-question gate, tool-payload guidance field, or output-replacing post-processing.
+
 ## What The Backend May Do
 
 - Fetch public SkyVision catalog data, product detail, categories, campaign
