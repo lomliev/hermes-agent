@@ -161,6 +161,96 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "date/time does not prove BookNow" in scenario["focus"]
 
 
+def test_newsletter_discount_code_entitlement_requires_verified_campaign_fact() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "непроверена кампания/отстъпка/код" in prompt
+    assert "не потвърждавай entitlement" in prompt
+    assert "канал/срок на доставка" in prompt
+    assert "support часове не са доказателство" in prompt
+    assert "info@skyvision.bg" in prompt
+    assert len(prompt) < 6500
+
+    assert "Unsupported newsletter/discount-code entitlement" in architecture
+    assert "model-visible campaign premise correction" in architecture
+    assert "not a keyword classifier" in architecture
+    assert "not answer-replacing post-processing" in architecture
+
+    principle = next(case for case in cases if case["id"] == "unsupported_newsletter_discount_code_entitlement")
+    assert principle["source_threads"] == ["1534909300768510014"]
+    assert "newsletter discount code" in principle["principle"]
+    assert "no verified public campaign fact" in principle["principle"]
+    assert "must not confirm entitlement" in principle["principle"]
+    assert "delivery channel or timing" in principle["principle"]
+    assert "contact hours are not evidence" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "newsletter_discount_code_unsupported_entitlement")
+    assert scenario["message"] == "Кога ще получа кода си за отстъпка, абонирал съм се за бюлетина?"
+    assert "no verified newsletter-code campaign fact" in scenario["focus"]
+    assert "do not invent email delivery" in scenario["focus"]
+
+
+def test_newsletter_discount_code_followup_corrects_unsupported_premise() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "При follow-up след непроверено потвърждение" in prompt
+    assert "поправи unsupported premise" in prompt
+    assert "не удвоявай с Spam/Promotions" in prompt
+    assert "eligibility/support workflow" in prompt
+    assert "работно време" in prompt
+
+    principle = next(case for case in cases if case["id"] == "unsupported_newsletter_discount_code_followup_correction")
+    assert "follow-up says no such email arrived" in principle["principle"]
+    assert "correct the prior unsupported assumption" in principle["principle"]
+    assert "Spam/Promotions" in principle["principle"]
+    assert "eligibility check" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "newsletter_discount_code_no_email_followup")
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Кога ще получа кода си за отстъпка, абонирал съм се за бюлетина?",
+        },
+        {
+            "role": "assistant",
+            "content": (
+                "Кодът трябва да пристигне по имейл; проверете Spam/Promotions "
+                "и ако не го откриете, екипът може да провери eligibility. Работно време: "
+                "понеделник-петък 09:00-17:00."
+            ),
+        },
+    ]
+    assert scenario["message"] == "Няма такъв имейл"
+    assert "correct earlier unsupported premise" in scenario["focus"]
+    assert "no Spam/Promotions" in scenario["focus"]
+    assert "no eligibility/support workflow" in scenario["focus"]
+
+
+def test_newsletter_discount_code_architecture_guard_has_no_runtime_router_or_templates() -> None:
+    combined = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "plugins/skyai_customer/public_tools.py",
+            "plugins/skyai_customer/dev_gateway.py",
+        )
+    )
+    forbidden = (
+        "newsletter_discount_router",
+        "newsletter_discount_classifier",
+        "discount_code_keyword_matcher",
+        "unsupported_discount_template",
+        "newsletter_code_post_process",
+        "newsletter_code_answer_rewrite",
+    )
+    for marker in forbidden:
+        assert marker not in combined
+
+
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     support = public_tools.handle_skyai_support_knowledge(include_contacts=True)

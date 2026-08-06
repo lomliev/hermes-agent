@@ -82,6 +82,15 @@ entitlement, account visibility, or same-day slot availability. This is a
 prompt-and-evaluation principle, not answer-replacing post-processing, template
 selection, keyword matching, or a booking-intent router.
 
+Unsupported newsletter/discount-code entitlement is model-visible campaign
+premise correction, not a keyword classifier. If no verified public campaign
+fact proves a newsletter discount code, SkyAI must not confirm entitlement,
+email delivery, timing, eligibility, or a support workflow. Contact facts and
+working hours remain valid public facts, but they are not proof that a campaign
+or workflow exists. This is not answer-replacing post-processing, a phrase
+matcher, a router, or a response template; it is a prompt-and-evaluation
+principle that tells Hermes to qualify or correct the unsupported premise.
+
 Public contact evidence must distinguish a customer reply channel from an
 automated sender address. `info@skyvision.bg` is the written customer contact.
 `reservations@skyvision.bg` is an automated reservation-notification address,
