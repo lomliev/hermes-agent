@@ -10,6 +10,20 @@ ARCHITECTURE_PATH = Path("plugins/skyai_customer/ARCHITECTURE.md")
 QA_PRINCIPLES_PATH = Path("plugins/skyai_customer/fixtures/qa_behavior_principles.json")
 COMPARE_SCENARIOS_PATH = Path("plugins/skyai_customer/fixtures/compare_scenarios.json")
 
+PRODUCT_EXECUTION_PERIOD_DETAIL_FIXTURE = {
+    "data": {
+        "id": 99790,
+        "title": "Въвеждащ полет-урок със самолет над Рилските езера",
+        "slug": "летене/въвеждащ-полет-урок-със-самолет-над-рилските-езера",
+        "schedule": "Услугата се изпълнява от началодо на Декември до края на Април",
+    }
+}
+PRODUCT_EXECUTION_PERIOD_SLOTS_FIXTURE = {
+    "fixedSlots": [],
+    "requestSlots": [{"start": "2026-02-03T07:00:00", "end": "2026-02-03T19:00:00"}],
+    "workingPeriods": [{"days": ["Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"], "startTime": "07:00", "endTime": "19:00"}],
+}
+
 
 def test_architecture_contract_declares_hermes_led_reasoning() -> None:
     text = ARCHITECTURE_PATH.read_text(encoding="utf-8")
@@ -421,6 +435,71 @@ def test_service_cancellation_policy_uses_hybrid_catalog_detail_facts() -> None:
     assert "8-hour structured cancellationPolicy" in scenario_by_id["reservation_identified_service_eight_hour_policy"]["focus"]
     assert "no redundant service clarification" in scenario_by_id["reservation_prior_turn_service_no_redundant_clarification"]["focus"]
     assert "one concise service clarification" in scenario_by_id["reservation_ambiguous_service_clarification"]["focus"]
+
+
+def test_product_execution_period_uses_detail_schedule_not_request_slot_hours(monkeypatch) -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "период през годината" in prompt
+    assert "request/working дни/часове" in prompt
+    assert "schedule в skyai_product_detail е авторитетен" in prompt
+    assert "slots/кампания са вторични" in prompt
+    assert len(prompt) < 6300
+
+    def fake_http_json(url: str, *, timeout: float = 8.0):
+        if "panel.skyvision.bg" in url:
+            return PRODUCT_EXECUTION_PERIOD_SLOTS_FIXTURE
+        return PRODUCT_EXECUTION_PERIOD_DETAIL_FIXTURE
+
+    monkeypatch.setattr(public_tools, "_http_json", fake_http_json)
+    detail = public_tools.handle_skyai_product_detail(
+        product_path="летене/въвеждащ-полет-урок-със-самолет-над-рилските-езера"
+    )["detail"]
+    slots = public_tools.handle_skyai_product_slots(product_id=99790, start_date="2026-02-03", end_date="2026-02-17")
+
+    assert detail["schedule"] == "Услугата се изпълнява от началодо на Декември до края на Април"
+    assert slots["request_slots"] == [{"start": "2026-02-03T07:00:00", "end": "2026-02-03T19:00:00"}]
+    assert slots["working_periods"][0]["days"] == ["Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+
+    assert "Annual product execution period is Hermes reasoning context" in architecture
+    assert "authoritative annual execution-period fact" in architecture
+    assert "cannot replace or negate that schedule" in architecture
+    assert "Campaign context is secondary" in architecture
+
+    principle = next(case for case in cases if case["id"] == "product_detail_execution_period")
+    assert principle["source_threads"] == ["case:product-99790-execution-period-detail-schedule"]
+    assert "annual execution period" in principle["principle"]
+    assert "current public product detail schedule" in principle["principle"]
+    assert "request-slot weekdays/hours" in principle["principle"]
+    assert "Campaign context" in principle["principle"]
+    assert "honest uncertainty" in principle["principle"]
+
+    scenario_by_id = {case["id"]: case for case in scenarios}
+    assert "beginning of December through end of April" in scenario_by_id["linked_winter_flying_lesson_execution_period"]["focus"]
+    assert "honest uncertainty" in scenario_by_id["execution_period_missing_detail_schedule_uncertain"]["focus"]
+
+
+def test_execution_period_fix_has_no_runtime_classifier_or_sku_hardcode() -> None:
+    combined = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in ("plugins/skyai_customer/public_tools.py", "plugins/skyai_customer/dev_gateway.py")
+    )
+    forbidden = (
+        "99790",
+        "въвеждащ-полет-урок-със-самолет-над-рилските-езера",
+        "execution_period_classifier",
+        "schedule_keyword_router",
+        "product_99790",
+        "mandatory_execution_period_question",
+        "execution_period_answer_template",
+        "answer_guidance",
+        "recommended_response",
+    )
+    for marker in forbidden:
+        assert marker not in combined
 
 
 def test_skyai_architecture_guardrails_absent_in_customer_plugin() -> None:

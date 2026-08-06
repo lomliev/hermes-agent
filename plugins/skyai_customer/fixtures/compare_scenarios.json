@@ -87,6 +87,32 @@
     "focus": "give info@skyvision.bg as the customer reply contact; do not present the automated reservations notification address as a reply channel"
   },
   {
+    "id": "linked_winter_flying_lesson_execution_period",
+    "message": "А в кои месеци се изпълнява?",
+    "history": [
+      {
+        "role": "user",
+        "content": "За кои дни и месеци се провежда този зимен полет-урок? https://skyvision.bg/подарък/летене/въвеждащ-полет-урок-със-самолет-над-рилските-езера/"
+      },
+      {
+        "role": "assistant",
+        "content": "По часовете за заявки: вторник-неделя, 07:00-19:00."
+      }
+    ],
+    "focus": "product 99790 public detail schedule is 'Услугата се изпълнява от началодо на Декември до края на Април'; distinguish annual execution period from request-slot Tuesday-Sunday 07:00-19:00 and answer beginning of December through end of April; winter campaign context is secondary and must not override the product schedule; no false missing-months claim or premature info@ escalation"
+  },
+  {
+    "id": "execution_period_missing_detail_schedule_uncertain",
+    "message": "В кои месеци се изпълнява тази услуга?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Става дума за услуга, при която product detail няма schedule, но slots tool показва request дни/часове."
+      }
+    ],
+    "focus": "absence coverage: if current public product detail has no schedule, do not invent annual months from request slots, working days, category, or campaign context; answer with honest uncertainty and separate available request-day/hour evidence from the unknown annual execution period"
+  },
+  {
     "id": "reservation_voucher_path_ambiguity",
     "message": "Искам да направя резервация за водно преживяване за двама на морето. Как да продължа?",
     "focus": "when reservation intent is clear but voucher/payment path is unknown, do not assume direct BookNow/card payment; clarify or explain existing SkyVision voucher account/My Voucher flow and product reservation voucher option, with direct BookNow/card only when no voucher is used; no unsupported mandatory UI/slot/operator steps"

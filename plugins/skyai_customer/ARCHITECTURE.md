@@ -115,6 +115,8 @@ selection, router branch, or answer-replacing post-processing.
 
 Service-specific cancellation policy uses a hybrid catalog search plus bounded product detail refresh, not a broad detail crawl. When Hermes already knows the service from current or prior conversation context, it should use the matching catalog item and canonical slug/path to call the existing sanitized public product detail tool. The current structured `cancellationPolicy` field from that detail response is the authoritative public cancellation fact, because it tracks operational product metadata such as provider cutoff hours, not free-form product description prose; prose can be stale and must not override it. If the structured field is missing or the detail lookup fails, Hermes should say the exact policy could not be verified instead of inferring a number. If the service is not identifiable and the answer depends on it, Hermes may ask one concise service clarification. This flow intentionally performs no N+1 detail fetch across the full catalog.
 
+Annual product execution period is Hermes reasoning context. For a specific service, the current public product-detail `schedule` is the authoritative annual execution-period fact. Request-slot and working-day/hour evidence describes requestability within the service period; it cannot replace or negate that schedule. Campaign context is secondary and cannot override the product's schedule. This is a prompt-and-evaluation tool-use principle, not a keyword classifier, phrase matcher, SKU hardcode, category router, answer template, mandatory-question gate, tool-payload guidance field, or output-replacing post-processing.
+
 ## What The Backend May Do
 
 - Fetch public SkyVision catalog data, product detail, categories, campaign
