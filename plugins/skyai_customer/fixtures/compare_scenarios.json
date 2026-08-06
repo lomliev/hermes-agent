@@ -43,6 +43,17 @@
     "focus": "answer directly that a universal value voucher exists for a non-specific gift; buyer selects the sum and recipient chooses the experience later; include public URL, starting price, top-up and residual/original-validity facts; use the support fact pack; no invented selected experience, keyword router, or answer template"
   },
   {
+    "id": "prohodna_bungee_minimum_anxiety",
+    "message": "Много искам бънджи на Проходна на 15 август, но ме притеснява, че ако не се съберат хора, може да не стане. Какво да направя?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Гледам Бънджи скок за един от пещера Проходна. В описанието пише, че за провеждане е необходимо да има резервации за минимум 6 скока."
+      }
+    ],
+    "focus": "minimum-reservations anxiety: preserve original minimum/weather/BookNow refund facts, proactively offer a verified comparable alternative whose product detail does not state the same stated minimum, identify material location/type/weather differences, and note that different provider alone is not proof. Do not spam unrelated catalog items or send only to support."
+  },
+  {
     "id": "massage_sofia_budget",
     "message": "Търся масаж за двама в София до 100 евро. Какво ще ми предложиш?",
     "focus": "catalog relevance, cards, EUR pricing, budget taste"
