@@ -32,6 +32,26 @@
     "focus": "existing voucher redemption with card top-up: reject categorical yes; no new free-flight campaign entitlement from top-up alone; qualifying new voucher/direct BookNow only under verified rules; date/time does not prove BookNow; original buyer/order email may own any pre-existing bonus; clarify unknown purchase origin"
   },
   {
+    "id": "newsletter_discount_code_unverified_entitlement",
+    "message": "Абонирах се за бюлетина. Кога ще получа кода си за отстъпка?",
+    "focus": "newsletter/campaign discount-code assumption with no verified public campaign fact: do not confirm entitlement, delivery channel/timing, Spam/Promotions troubleshooting, eligibility/manual validation, or support workflow; contacts and working hours are not evidence"
+  },
+  {
+    "id": "newsletter_discount_code_missing_email_correction",
+    "message": "Няма такъв имейл",
+    "history": [
+      {
+        "role": "user",
+        "content": "Абонирах се за бюлетина. Кога ще получа кода си за отстъпка?"
+      },
+      {
+        "role": "assistant",
+        "content": "Кодът ще пристигне по имейл. Провери и папките Spam и Promotions; ако го няма, пиши на поддръжката за ръчна проверка."
+      }
+    ],
+    "focus": "follow-up after an unsupported assistant claim: correct the unsupported confirmation and premise; do not extend it into troubleshooting or support workflow; info@skyvision.bg and working hours remain optional facts only after the customer supplies a specific promotion source"
+  },
+  {
     "id": "massage_sofia_budget",
     "message": "Търся масаж за двама в София до 100 евро. Какво ще ми предложиш?",
     "focus": "catalog relevance, cards, EUR pricing, budget taste"

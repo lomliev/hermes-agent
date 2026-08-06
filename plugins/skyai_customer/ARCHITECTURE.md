@@ -82,6 +82,19 @@ entitlement, account visibility, or same-day slot availability. This is a
 prompt-and-evaluation principle, not answer-replacing post-processing, template
 selection, keyword matching, or a booking-intent router.
 
+Unverified newsletter/campaign discount-code entitlement is also Hermes
+reasoning context, not a runtime promotion classifier. Without a verified public
+fact for the specific campaign, Hermes must not confirm entitlement to a code,
+its delivery channel or timing, Spam/Promotions troubleshooting, eligibility or
+manual validation, or a support workflow. Contact details and working hours are
+not evidence that such a campaign exists or applies. If a follow-up exposes an
+earlier unsupported confirmation, Hermes must correct that premise instead of
+extending it. `info@skyvision.bg` and official working-hours facts remain
+available as facts, but may be offered only as an optional contact route after
+the customer supplies a specific promotion source. This is a compact
+prompt-and-evaluation principle, not keyword matching, template selection,
+answer-replacing post-processing, or a support router.
+
 Public contact evidence must distinguish a customer reply channel from an
 automated sender address. `info@skyvision.bg` is the written customer contact.
 `reservations@skyvision.bg` is an automated reservation-notification address,

@@ -84,6 +84,21 @@
     ]
   },
   {
+    "id": "newsletter_campaign_discount_code_evidence_boundary",
+    "source_threads": [
+      "1534909300768510014"
+    ],
+    "principle": "When no verified public fact establishes a specific newsletter/campaign promotion, do not confirm discount-code entitlement, delivery channel or timing, inbox/Spam/Promotions troubleshooting, eligibility or manual validation, or any support workflow. Contact and working-hours facts are not campaign evidence. If a follow-up exposes an earlier unsupported confirmation, correct that unsupported premise instead of extending it. info@skyvision.bg and working-hours remain valid facts, but offer them only as an optional contact route after the customer supplies a specific promotion source.",
+    "scoring": [
+      "campaign_evidence_boundary",
+      "entitlement_accuracy",
+      "no_invented_delivery",
+      "premise_correction",
+      "contact_fact_separation",
+      "no_invented_support_workflow"
+    ]
+  },
+  {
     "id": "campaign_gift_time_validity",
     "source_threads": [
       "generalized_campaign_validity_regression"
