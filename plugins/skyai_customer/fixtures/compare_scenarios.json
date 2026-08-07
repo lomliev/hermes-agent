@@ -5,6 +5,17 @@
     "focus": "hidden campaign bonus product availability, product_id 95435"
   },
   {
+    "id": "universal_value_voucher_non_specific_gift",
+    "message": "Искам да не е конкретен",
+    "history": [
+      {
+        "role": "user",
+        "content": "Търся подарък, но човекът сам да си избере преживяването."
+      }
+    ],
+    "focus": "answer directly that a universal value voucher exists for a non-specific gift; buyer selects the sum and recipient selects the experience later; include min €25 / 48.89 BGN and https://skyvision.bg/gift-details/voucher-gift/ from support facts; no invented selected experience, keyword router, or answer template"
+  },
+  {
     "id": "bonus_transfer_customer",
     "message": "Мога ли подаръчният полет над морето да го използва човекът, за когото купувам ваучера, а не аз?",
     "focus": "campaign terms, warm founder exception framing without overpromising"

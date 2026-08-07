@@ -796,3 +796,38 @@ def test_skyai_architecture_guardrails_absent_in_customer_plugin() -> None:
     assert "when_to_use" not in payload_keys
     assert "suggested_question" not in payload_keys
     assert "recommended_response" not in payload_keys
+
+
+
+def test_universal_value_voucher_is_model_first_prompt_and_evaluation_material() -> None:
+    expected_principle = (
+        "Подарък без преживяване: facts за „Подаръчен ваучер на стойност“; съществува; "
+        "купувачът избира сума, получателят после избира. Без наложено преживяване; model facts, not router/template."
+    )
+    prompt = dev_gateway.build_skyai_system_prompt()
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert dev_gateway.SKYAI_UNIVERSAL_VALUE_VOUCHER_PRINCIPLE == expected_principle
+    assert expected_principle in prompt
+
+    principle = next(
+        case for case in principles if case["id"] == "universal_value_voucher_non_specific_gift"
+    )
+    assert principle["source_threads"] == [
+        "case:skyai-voucher-value-20260807-1535227388445720779"
+    ]
+    assert "universal value voucher exists" in principle["principle"]
+    assert "recipient chooses the experience later" in principle["principle"]
+    assert "do not invent or force a selected experience" in principle["principle"]
+    assert "not a keyword router or answer template" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "universal_value_voucher_non_specific_gift"
+    )
+    assert scenario["message"] == "Искам да не е конкретен"
+    assert "universal value voucher exists" in scenario["focus"]
+    assert "non-specific gift" in scenario["focus"]
+    assert "€25 / 48.89 BGN" in scenario["focus"]
+    assert "https://skyvision.bg/gift-details/voucher-gift/" in scenario["focus"]
+    assert "no invented selected experience" in scenario["focus"]

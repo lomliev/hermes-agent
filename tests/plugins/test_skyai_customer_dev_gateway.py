@@ -1956,6 +1956,47 @@ def test_resolve_agent_runtime_attaches_profile_credential_pool() -> None:
     assert runtime["credential_pool"] is pool
 
 
+
+
+
+def test_resolve_agent_runtime_openai_codex_uses_runtime_provider_not_legacy_auth_store(monkeypatch) -> None:
+    import hermes_cli.auth as legacy_auth
+    import hermes_cli.runtime_provider as runtime_provider
+
+    pool = object()
+    seen = {}
+
+    def forbidden_legacy_auth_store(*_args, **_kwargs):
+        raise PermissionError("legacy auth file read must not be used by SkyAI production model path")
+
+    def fake_runtime_provider(**kwargs):
+        seen.update(kwargs)
+        return {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "runtime-provider-token",
+            "credential_pool": pool,
+        }
+
+    monkeypatch.setattr(legacy_auth, "_load_auth_store", forbidden_legacy_auth_store)
+    monkeypatch.setattr(runtime_provider, "resolve_runtime_provider", fake_runtime_provider)
+
+    runtime = dev_gateway._resolve_agent_runtime(
+        {
+            "model": {
+                "default": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "api_mode": "codex_responses",
+            }
+        }
+    )
+
+    assert seen == {"requested": "openai-codex", "target_model": "gpt-5.6-sol"}
+    assert runtime["api_key"] == "runtime-provider-token"
+    assert runtime["credential_pool"] is pool
+
+
 def test_resolve_agent_runtime_rejects_provider_id_rewrite() -> None:
     def mismatched_runtime_resolver(**_kwargs):
         return {

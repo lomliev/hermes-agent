@@ -1069,3 +1069,21 @@ def test_event_log_append_writes_sanitized_append_only_record(monkeypatch, tmp_p
     assert record["anonymous_id_hash"]
     assert record["conversation_id_hash"]
     assert record["properties"] == {"product_id": 10536, "surface": "canary"}
+
+
+
+def test_support_knowledge_exposes_universal_value_voucher_facts() -> None:
+    result = public_tools.handle_skyai_support_knowledge()
+
+    facts = result["vouchers"]["universal_value_voucher"]
+    assert facts["canonical_title"] == "Подаръчен ваучер на стойност"
+    assert facts["public_url"] == "https://skyvision.bg/gift-details/voucher-gift/"
+    assert facts["universal"] is True
+    assert facts["non_specific"] is True
+    assert facts["buyer_selects_sum"] is True
+    assert facts["recipient_selects_experience_later"] is True
+    assert facts["starting_price_eur"] == "25.00"
+    assert facts["starting_price_bgn"] == "48.89"
+    assert facts["higher_price_requires_top_up"] is True
+    assert facts["lower_price_creates_residual_voucher"] is True
+    assert facts["residual_voucher_keeps_original_validity"] is True
