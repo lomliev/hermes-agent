@@ -64,6 +64,11 @@ Current line:
   `reservations@skyvision.bg` remains an automated notification sender, not a
   reply channel. No issuer classifier, keyword guard, or contact router is
   added.
+- `v2.8` - verified current-surface capability facts are visible to Hermes for
+  the widget: text, send, and voice controls are present; image/file upload,
+  attachment UI, and upload endpoint/FormData are unsupported. Hermes must not
+  invent UI controls or assert unknown-surface capabilities. No keyword router,
+  canned response template, or output post-processing is added.
 
 ## Canonical Source
 

@@ -32,7 +32,7 @@ def test_skyai_prompt_is_principle_based_not_script_pack() -> None:
 
     assert "Hermes мисли" in prompt
     assert "не е заповед какво да кажеш" in prompt
-    assert len(prompt) < 5200
+    assert len(prompt) < 5600
     assert "SkyAI sales playbook" not in prompt
     assert "do_not_say" not in prompt
     assert "customer_facing_flow" not in prompt
@@ -63,6 +63,36 @@ def test_skyai_prompt_treats_prior_turns_as_shared_context() -> None:
     assert "prompt-and-evaluation principle" in architecture
     assert "backend deduplication" in architecture
     assert "keyword rule" in architecture
+
+
+def test_skyai_prompt_includes_current_widget_surface_capability_facts() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt(
+        surface="chat",
+        surface_capabilities=dev_gateway.current_widget_surface_capability_facts(),
+    )
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+
+    assert "Проверени възможности на текущия чат" in prompt
+    assert "качване на снимки/файлове: неподдържано" in prompt
+    assert "няма бутон за прикачване" in prompt
+    assert "няма upload endpoint/FormData" in prompt
+    assert "текстово поле" in prompt
+    assert "бутон за изпращане" in prompt
+    assert "гласово въвеждане" in prompt
+    assert "не казвай, че има бутон, икона или функция" in prompt
+    assert "освен ако е в проверените факти" in prompt
+    assert len(prompt) < 6800
+    assert "Current surface capabilities" in architecture
+    assert "must not claim a button, icon, upload flow, or feature exists" in architecture
+
+
+def test_skyai_unknown_surface_prompt_preserves_capability_uncertainty() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt(surface="chat")
+
+    assert "Проверени възможности на текущия чат" not in prompt
+    assert "качване на снимки/файлове: неподдържано" not in prompt
+    assert "Ако няма проверени surface facts" in prompt
+    assert "не твърди нито че функцията е налична, нито че липсва" in prompt
 
 
 def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
@@ -134,6 +164,22 @@ def test_plovdiv_dining_intent_is_not_satisfied_by_culinary_course() -> None:
     assert scenario["message"] == "Искаме да хапнем в Пловдив. Какво имате?"
     assert "restaurant/dining intent" in scenario["focus"]
     assert "culinary course is not a dining match" in scenario["focus"]
+
+
+def test_unsupported_image_upload_case_is_evaluation_material_not_router_policy() -> None:
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    principle = next(case for case in cases if case["id"] == "verified_surface_capabilities")
+    scenario = next(case for case in scenarios if case["id"] == "widget_image_upload_unsupported")
+
+    assert "do not claim UI controls or capabilities exist" in principle["principle"]
+    assert "verified current-surface facts" in principle["principle"]
+    assert "unsupported" in principle["principle"]
+    assert "supported alternatives" in principle["principle"]
+    assert scenario["message"] == "Как да изпратя снимка?"
+    assert "reject attachment-icon answer" in scenario["focus"]
+    assert "do not invent another upload channel" in scenario["focus"]
 
 
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
@@ -231,6 +277,25 @@ def test_customer_tools_return_facts_not_instruction_keys() -> None:
         assert not any(key.endswith("_guidance") for key in keys)
         assert "when_to_use" not in keys
         assert "customer_facing_flow" not in keys
+
+
+def test_no_ui_capability_keyword_router_or_template_drift() -> None:
+    source = Path("plugins/skyai_customer/dev_gateway.py").read_text(encoding="utf-8")
+
+    forbidden_symbols = {
+        "_image_upload_requested",
+        "_attachment_requested",
+        "IMAGE_UPLOAD_TERMS",
+        "ATTACHMENT_ICON_REPLY",
+        "unsupported_image_upload_reply",
+        "postprocess_ui_capability_reply",
+    }
+    for symbol in forbidden_symbols:
+        assert symbol not in source
+
+    assert "Как да изпратя снимка" not in source
+    assert "attachment icon" not in source
+    assert "кламер" not in source
 
 
 def test_catalog_tool_has_no_backend_persona_or_keyword_policy() -> None:

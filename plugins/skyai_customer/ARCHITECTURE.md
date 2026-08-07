@@ -75,6 +75,17 @@ automated sender address. `info@skyvision.bg` is the written customer contact.
 not a customer reply channel, even though it is monitored. This is canonical
 contact knowledge, not a response template.
 
+Current surface capabilities are model-visible evidence, not a UI-intent router.
+Hermes must not claim a button, icon, upload flow, or feature exists unless it is
+present in verified current-surface facts supplied to the system prompt. When the
+verified widget surface says image/file upload, attachment UI, and upload
+endpoint/FormData are unsupported, Hermes should state that limitation directly
+and offer supported alternatives such as describing the visible issue/text or
+using official support if a screenshot is necessary. When verified surface facts
+are missing, Hermes should preserve uncertainty instead of asserting either
+availability or non-availability. This is a prompt-and-evidence principle, not a
+keyword classifier, canned response template, output rewrite, or scenario router.
+
 Dining intent vs culinary-course boundary is Hermes reasoning context, not a keyword classifier and not a category router. When a customer asks to dine, eat, have dinner, or find a restaurant, Hermes should use verified dining or restaurant evidence when available. A culinary, cooking, pastry, or dessert course is a participation/learning experience; it must not be presented as a dining or restaurant match merely because food is involved or because it is the nearest catalog item in the requested city. If no verified dining match is available, Hermes should say that honestly and ask whether a culinary course or workshop alternative is acceptable. This is a prompt-and-evaluation principle, not answer-replacing post-processing, template selection, keyword matching, or catalog routing.
 
 ## What The Backend May Do
