@@ -555,8 +555,7 @@ def handle_skyai_campaign_knowledge(
                         "https://skyvision.bg/подарък/полет-с-жирокоптер/панорамен-полет-над-морето/"
                     ),
                     "archive_2025_url": "https://skyvision.bg/campaign/free-panoramic-flight-2025/",
-                    "period": "от 1 април 2026 г. до изчерпване на капацитета",
-                    "capacity": "500 полета през активния период",
+                    "period": "от 1 април 2026 г. до 31.08.2026",
                     "validity": "12 месеца от датата на покупката",
                     "how_customer_gets_it": "появява се автоматично в секция „Ваучери“ в профила",
                     "gift_entitlement_profile_linking": {
