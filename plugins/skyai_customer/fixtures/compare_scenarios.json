@@ -43,6 +43,12 @@
     "focus": "currently loaded existing voucher state: diagnose loaded voucher path, Моят ваучер/profile Ваучери -> Изчисти използването -> confirm, then return to product, choose the validated variant, and Купи ваучер for a separately paid new gift voucher; normal purchase restoration; no manual issuance and existing voucher cannot buy another voucher"
   },
   {
+    "id": "widget_image_upload_unsupported",
+    "message": "Как да изпратя снимка?",
+    "history": [],
+    "focus": "current widget verified capabilities: reject attachment-icon answer; image/file upload unsupported; no attachment button and no upload endpoint/FormData; say the chat cannot upload images and offer supported alternatives like describing the visible issue/text or official support if a screenshot is necessary; do not invent another upload channel"
+  },
+  {
     "id": "product_detail_buy_voucher_restored_after_clear",
     "message": "Пише ми само Резервирай, значи ли че няма подаръчен ваучер и трябва вие ръчно да го издадете?",
     "history": [

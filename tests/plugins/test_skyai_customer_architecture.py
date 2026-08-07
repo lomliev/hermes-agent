@@ -796,3 +796,67 @@ def test_skyai_architecture_guardrails_absent_in_customer_plugin() -> None:
     assert "when_to_use" not in payload_keys
     assert "suggested_question" not in payload_keys
     assert "recommended_response" not in payload_keys
+
+
+def test_skyai_prompt_includes_current_widget_surface_capability_facts() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt(
+        surface="chat",
+        surface_capabilities=dev_gateway.current_widget_surface_capability_facts(),
+    )
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+
+    assert "Проверени възможности на текущия чат" in prompt
+    assert "качване на снимки/файлове: неподдържано" in prompt
+    assert "няма бутон за прикачване" in prompt
+    assert "няма upload endpoint/FormData" in prompt
+    assert "текстово поле" in prompt
+    assert "бутон за изпращане" in prompt
+    assert "гласово въвеждане" in prompt
+    assert "не казвай, че има бутон, икона или функция" in prompt
+    assert "освен ако е в проверените факти" in prompt
+    assert len(prompt) < 7600
+    assert "Current surface capabilities" in architecture
+    assert "must not claim a button, icon, upload flow, or feature exists" in architecture
+
+
+def test_skyai_unknown_surface_prompt_preserves_capability_uncertainty() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt(surface="chat")
+
+    assert "Проверени възможности на текущия чат" not in prompt
+    assert "качване на снимки/файлове: неподдържано" not in prompt
+    assert "Ако няма проверени surface facts" in prompt
+    assert "не твърди нито че функцията е налична, нито че липсва" in prompt
+
+
+def test_unsupported_image_upload_case_is_evaluation_material_not_router_policy() -> None:
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    principle = next(case for case in cases if case["id"] == "verified_surface_capabilities")
+    scenario = next(case for case in scenarios if case["id"] == "widget_image_upload_unsupported")
+
+    assert "do not claim UI controls or capabilities exist" in principle["principle"]
+    assert "verified current-surface facts" in principle["principle"]
+    assert "unsupported" in principle["principle"]
+    assert "supported alternatives" in principle["principle"]
+    assert scenario["message"] == "Как да изпратя снимка?"
+    assert "reject attachment-icon answer" in scenario["focus"]
+    assert "do not invent another upload channel" in scenario["focus"]
+
+
+def test_no_ui_capability_keyword_router_or_template_drift() -> None:
+    source = Path("plugins/skyai_customer/dev_gateway.py").read_text(encoding="utf-8")
+
+    forbidden_symbols = {
+        "_image_upload_requested",
+        "_attachment_requested",
+        "IMAGE_UPLOAD_TERMS",
+        "ATTACHMENT_ICON_REPLY",
+        "unsupported_image_upload_reply",
+        "postprocess_ui_capability_reply",
+    }
+    for symbol in forbidden_symbols:
+        assert symbol not in source
+
+    assert "attachment icon" not in source
+    assert "кламер" not in source

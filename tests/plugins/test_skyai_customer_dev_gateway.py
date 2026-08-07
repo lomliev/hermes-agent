@@ -795,6 +795,116 @@ async def test_runner_metadata_rejects_wrong_typed_fields(
 
 
 @pytest.mark.asyncio
+async def test_build_chat_response_passes_widget_surface_capabilities_to_exact_system_prompt(tmp_path: Path) -> None:
+    seen = {}
+
+    async def fake_runner(message, history, conversation_id, canary_settings, system_prompt):
+        seen.update(
+            {
+                "message": message,
+                "conversation_id": conversation_id,
+                "system_prompt": system_prompt,
+            }
+        )
+        return {
+            "final_response": "В този чат не можеш да качиш снимка. Опиши видимия проблем или текста, а ако снимката е нужна, свържи се с екипа през официалните контакти."
+        }
+
+    response = await dev_gateway.build_chat_response(
+        {
+            "conversation_id": "surface-c1",
+            "message": "Как да изпратя снимка?",
+            "metadata": {
+                "surface": "widget_chatkit_dev",
+                "surface_capabilities": {
+                    "text_input": True,
+                    "send_button": True,
+                    "voice_input": True,
+                    "image_upload": False,
+                    "file_upload": False,
+                    "attachment_button": False,
+                    "upload_endpoint": False,
+                },
+            },
+        },
+        settings(tmp_path, live_model=True),
+        agent_runner=fake_runner,
+    )
+
+    assert response["status"] == "ok"
+    assert response["reply"].startswith("В този чат не можеш да качиш снимка")
+    assert seen["message"] == "Как да изпратя снимка?"
+    assert seen["conversation_id"] == dev_gateway.runtime_conversation_id("surface-c1")
+    assert "Проверени възможности на текущия чат" in seen["system_prompt"]
+    assert "качване на снимки/файлове: неподдържано" in seen["system_prompt"]
+    assert "няма бутон за прикачване" in seen["system_prompt"]
+    assert "бутон за изпращане" in seen["system_prompt"]
+    assert "гласово въвеждане" in seen["system_prompt"]
+    assert "не казвай, че има бутон, икона или функция" in seen["system_prompt"]
+
+
+def test_widget_html_has_no_file_attachment_or_upload_surface(tmp_path: Path) -> None:
+    html = dev_gateway.render_widget_html(settings(tmp_path))
+
+    assert '<textarea id="input"' in html
+    assert 'id="send" type="submit"' in html
+    assert 'id="voice"' in html
+    assert 'type="file"' not in html
+    assert "FormData" not in html
+    assert "attachment icon" not in html.lower()
+    assert "upload endpoint" not in html.lower()
+
+
+def test_client_metadata_sends_verified_widget_capabilities(tmp_path: Path) -> None:
+    html = dev_gateway.render_widget_html(settings(tmp_path))
+
+    assert "surface_capabilities" in html
+    assert "text_input: true" in html
+    assert "send_button: true" in html
+    assert "voice_input: true" in html
+    assert "image_upload: false" in html
+    assert "file_upload: false" in html
+    assert "attachment_button: false" in html
+    assert "upload_endpoint: false" in html
+
+
+def test_supported_voice_control_fact_is_adjacent_to_unsupported_upload_fact() -> None:
+    facts = dev_gateway.current_widget_surface_capability_facts()
+
+    assert facts["text_input"] is True
+    assert facts["send_button"] is True
+    assert facts["voice_input"] is True
+    assert facts["image_upload"] is False
+    assert facts["file_upload"] is False
+    assert facts["attachment_button"] is False
+    assert facts["upload_endpoint"] is False
+
+
+def test_extract_surface_capabilities_accepts_verified_payload_but_not_missing_payload() -> None:
+    assert dev_gateway.extract_surface_capabilities({}) is None
+    assert dev_gateway.extract_surface_capabilities({"metadata": {"surface": "other_widget"}}) is None
+
+    facts = dev_gateway.extract_surface_capabilities(
+        {
+            "metadata": {
+                "surface": "widget_chatkit_prod",
+                "surface_capabilities": {
+                    "text_input": True,
+                    "send_button": True,
+                    "voice_input": True,
+                    "image_upload": False,
+                    "file_upload": False,
+                    "attachment_button": False,
+                    "upload_endpoint": False,
+                },
+            }
+        }
+    )
+
+    assert facts == dev_gateway.current_widget_surface_capability_facts()
+
+
+@pytest.mark.asyncio
 async def test_build_chat_response_exposes_resolved_model_trace(tmp_path: Path) -> None:
     async def fake_runner(message, history, conversation_id, canary_settings):
         return {
@@ -1766,7 +1876,7 @@ def test_system_prompt_links_campaign_bonus_id_to_slots_tool() -> None:
     assert "не коментирай самото ограничение" in prompt
     assert "представи се кратко като SkyAI" in prompt
     assert "не решавай учебни задачи" in prompt
-    assert len(prompt) < 6300
+    assert len(prompt) < 6800
     assert "силно попадение" not in prompt
     assert "ще й легне" not in prompt
     assert "ако клиентът уточни нещо" not in prompt
