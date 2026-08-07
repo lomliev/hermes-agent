@@ -7,9 +7,6 @@ not an upstream Hermes product surface and must not be proposed to
 The helpers deliberately reuse existing Hermes behavior instead of widening
 the core:
 
-- `CLOUD_NATIVE_TEAM_AUTONOMY.md` is the shared trust, semantic-sovereignty,
-  release, upstream-sync, and no-personal-Mac runtime contract for Muncho,
-  SkyAI, and the coming SkyVision target adapter.
 - `auto_sync_hardening.py` proves superseded automation-owned sync PR states
   from explicit Git ancestry and deduplicates unchanged structured blockers.
 - `mechanical_job_rail.py` packages the fork-only sync routine as one exact,

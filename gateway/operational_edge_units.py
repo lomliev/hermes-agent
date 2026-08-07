@@ -166,7 +166,6 @@ def _helper_binds(release: Path, domain: str) -> list[str]:
             ("ssh-alwyzon-phoenix", HERMES_HOME / "bin/ssh-alwyzon-phoenix"),
         ),
         "skyvision_seo": (),
-        "skyai_release": (),
         "skyvision_gitlab": (
             ("muncho_step_up_verify", HERMES_HOME / "bin/muncho_step_up_verify"),
             ("muncho_dangerous_action_guard", HERMES_HOME / "bin/muncho_dangerous_action_guard"),
@@ -215,7 +214,7 @@ def _service_unit(
     ]
     metadata_lines = (
         ["IPAddressAllow=169.254.169.254/32"]
-        if domain in {"canonical", "skyvision_seo", "skyai_release"}
+        if domain in {"canonical", "skyvision_seo"}
         else ["IPAddressDeny=169.254.169.254/32"]
     )
     audit_domains = {

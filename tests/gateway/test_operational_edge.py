@@ -174,9 +174,6 @@ def test_catalog_is_exactly_implemented_and_credential_scoped() -> None:
     assert catalog["cron.canonical.projections"].access is OperationalAccess.MECHANICAL
     assert catalog["infra.contabo.observe"].argv_prefix == ("instances",)
     assert catalog["infra.alwyzon.observe"].argv_prefix == ("status",)
-    skyai_publish = catalog["skyai.release.publish"]
-    assert skyai_publish.minimum_operator_tier == "top"
-    assert skyai_publish.probe_operation_id == "skyai.release.status"
 
 
 def test_every_operation_has_static_model_readable_purpose_metadata() -> None:

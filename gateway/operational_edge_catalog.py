@@ -70,8 +70,6 @@ OPERATION_PURPOSES: Mapping[str, str] = MappingProxyType(
         "skyvision.db.probe": "Run the fixed read-only SkyVision database readiness query.",
         "skyvision.db.query": "Run one model-designated non-sensitive bounded read-only query against an allowed SkyVision database.",
         "skyvision.db.query_sensitive": "Run one model-designated sensitive bounded read-only query under an exact signed Canonical plan capability.",
-        "skyai.release.status": "Check the live SkyAI production identity and cloud release broker readiness.",
-        "skyai.release.publish": "Publish one exact green SkyAI revision as a signed immutable cloud release with a bounded deployment deadline.",
         "skyvision.panel.status": "Check SkyVision panel read-only helper readiness.",
         "skyvision.panel.check_voucher_user": "Check the panel user linked to one voucher.",
         "skyvision.panel.invoice_lookup": "Look up an invoice by invoice ID or order ID.",
@@ -231,7 +229,6 @@ ASSETS: tuple[AssetSpec, ...] = (
     _asset("bitrix_voucher_ops.py"),
     _asset("skyvision_callcenter_api_tools.py"),
     _asset("skyvision_db_readonly.py", root="release", relative="ops/muncho/runtime/skyvision_db_readonly.py"),
-    _asset("skyai_release_broker.py", root="release", relative="ops/muncho/runtime/skyai_release_broker.py"),
     _asset("skyvision_panel_ops_readonly.py"),
     _asset("skyvision_gitlab_prod_deploy.py"),
     _asset("skyvision_gitlab_readonly.py", root="release", relative="ops/muncho/runtime/skyvision_gitlab_readonly.py"),
@@ -431,19 +428,6 @@ OPERATIONS: tuple[OperationSpec, ...] = (
         _arg("redact_field", kind=ArgumentKind.IDENTIFIER, repeat=True),
     ), access=OperationalAccess.MUTATION, timeout=60, probe="skyvision.db.probe"),
 
-    # Cloud-native SkyAI release publication. GPT chooses the exact revision
-    # and schedule; the helper validates only immutable identities, green CI,
-    # bounded timing, signatures, and storage receipts.
-    _op("skyai.release.status", "skyai_release", "skyai_release_broker.py", "status", timeout=60),
-    _op("skyai.release.publish", "skyai_release", "skyai_release_broker.py", "publish", arguments=(
-        _arg("sha", required=True, kind=ArgumentKind.SHA),
-        _arg("behavior_version", required=True, kind=ArgumentKind.IDENTIFIER),
-        _arg("case_id", required=True, kind=ArgumentKind.IDENTIFIER),
-        _arg("requester_id", required=True, kind=ArgumentKind.IDENTIFIER),
-        _arg("reason", required=True, maximum_chars=2000),
-        _arg("not_before_unix", kind=ArgumentKind.INTEGER, minimum=1, maximum=4_102_444_800),
-        _arg("deploy_by_unix", kind=ArgumentKind.INTEGER, minimum=1, maximum=4_102_444_800),
-    ), access=OperationalAccess.MUTATION, timeout=420, probe="skyai.release.status", minimum_operator_tier="top"),
     _op("skyvision.panel.status", "skyvision_panel", "skyvision_panel_ops_readonly.py", "status"),
     _op("skyvision.panel.check_voucher_user", "skyvision_panel", "skyvision_panel_ops_readonly.py", "check-voucher-user", arguments=(
         _arg("voucher", required=True, maximum_chars=80), _arg("case_id", required=True, kind=ArgumentKind.IDENTIFIER), _arg("requester", required=True, maximum_chars=240),
@@ -535,10 +519,6 @@ CREDENTIALS_BY_DOMAIN: Mapping[str, tuple[CredentialBinding, ...]] = MappingProx
             CredentialBinding("alwyzon-ssh-env", HERMES_HOME / "secrets/alwyzon_phoenix_ssh.env", HERMES_HOME / "secrets/alwyzon_phoenix_ssh.env"),
         ),
         "skyvision_seo": (),
-        "skyai_release": (
-            CredentialBinding("github-ops", HERMES_HOME / "secrets/github_ops.env", HERMES_HOME / "secrets/github_ops.env"),
-            CredentialBinding("skyai-release-signing-private", Path("/etc/muncho/keys/skyai-release-signing-private.pem"), Path("/etc/muncho/keys/skyai-release-signing-private.pem")),
-        ),
         "skyvision_gitlab": (
             CredentialBinding("skyvision-gitlab-group", HERMES_HOME / "secrets/skyvision_gitlab_group_ops.env", HERMES_HOME / "secrets/skyvision_gitlab_group_ops.env"),
             CredentialBinding("skyvision-gitlab-project", HERMES_HOME / "secrets/skyvision_gitlab_frontend_project_bot.env", HERMES_HOME / "secrets/skyvision_gitlab_frontend_project_bot.env"),
