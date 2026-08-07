@@ -161,6 +161,46 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "date/time does not prove BookNow" in scenario["focus"]
 
 
+
+def test_universal_value_voucher_is_model_first_prompt_and_evaluation_material() -> None:
+    expected_principle = (
+        'Неконкретен: „Подаръчен ваучер на стойност“ €25/48.89 лв. https://skyvision.bg'
+        '/gift-details/voucher-gift/. Купувачът избира сума; получателят - преживяване '
+        'по-късно; по-скъпо се доплаща, по-евтино остатъкът остава като ваучерна стойно'
+        'ст/нов ваучер. Facts, не router/шаблон.'
+    )
+    prompt = dev_gateway.build_skyai_system_prompt()
+    principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert dev_gateway.SKYAI_UNIVERSAL_VALUE_VOUCHER_PRINCIPLE == expected_principle
+    assert expected_principle in prompt
+
+    principle = next(
+        case for case in principles if case["id"] == "universal_value_voucher_non_specific_gift"
+    )
+    assert principle["source_threads"] == [
+        "case:skyai-voucher-value-20260807-1535227388445720779"
+    ]
+    assert "universal value voucher exists" in principle["principle"]
+    assert "recipient chooses the experience later" in principle["principle"]
+    assert "top-up" in principle["principle"]
+    assert "residual" in principle["principle"]
+    assert "original validity" in principle["principle"]
+    assert "https://skyvision.bg/gift-details/voucher-gift/" in principle["principle"]
+    assert "not a keyword router or answer template" in principle["principle"]
+
+    scenario = next(
+        case for case in scenarios if case["id"] == "universal_value_voucher_non_specific_gift"
+    )
+    assert scenario["message"] == "Искам да не е конкретен"
+    assert "universal value voucher exists" in scenario["focus"]
+    assert "non-specific gift" in scenario["focus"]
+    assert "top-up" in scenario["focus"]
+    assert "residual" in scenario["focus"]
+    assert "no invented selected experience" in scenario["focus"]
+
+
 def test_external_voucher_boundary_is_a_general_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
