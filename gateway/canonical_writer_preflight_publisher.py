@@ -79,6 +79,10 @@ from gateway.canonical_writer_config_collector import (
     collect_and_stage,
     load_config_collector_receipt,
 )
+from gateway.production_access_policy import (
+    PRODUCTION_PLAN_OPERATOR_DISCORD_USER_IDS,
+    PRODUCTION_TOP_TRUSTED_OPERATOR_DISCORD_USER_IDS,
+)
 from gateway.canonical_writer_planner import (
     build_and_stage_native_observation_plan,
     load_release_manifest,
@@ -692,6 +696,12 @@ def _collect_or_resume_configs(
         release_manifest_file_sha256=str(plan["release_manifest_file_sha256"]),
         tls_server_name=DATABASE_TLS_SERVER_NAME,
         owner_discord_user_ids=(OWNER_DISCORD_USER_ID,),
+        plan_operator_discord_user_ids=tuple(
+            sorted(PRODUCTION_PLAN_OPERATOR_DISCORD_USER_IDS)
+        ),
+        top_trusted_operator_discord_user_ids=tuple(
+            sorted(PRODUCTION_TOP_TRUSTED_OPERATOR_DISCORD_USER_IDS)
+        ),
         _clock=clock,
     )
     receipt = load_config_collector_receipt(
@@ -821,9 +831,9 @@ def _validate_native_binding(
     expected_units = _expected_unit_bytes(str(plan["revision"]))
     expected_digests = {
         DEFAULT_STAGED_WRITER_UNIT_PATH: native.value["writer_unit"]["sha256"],
-        DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH: _sha256_bytes(
-            expected_units[DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH]
-        ),
+        DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH: native.value[
+            "phase_b_readiness_unit"
+        ]["sha256"],
         DEFAULT_STAGED_GATEWAY_UNIT_PATH: native.value["gateway_unit"]["sha256"],
     }
     for path, payload in expected_units.items():
@@ -1242,11 +1252,7 @@ def _receipt_artifacts(native: NativeObservationPlan) -> Mapping[str, Any]:
         != native.value["gateway_config"]["sha256"]
         or result["writer_unit"]["sha256"] != native.value["writer_unit"]["sha256"]
         or result["phase_b_readiness_unit"]["sha256"]
-        != _sha256_bytes(
-            _expected_unit_bytes(str(native.value["revision"]))[
-                DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH
-            ]
-        )
+        != native.value["phase_b_readiness_unit"]["sha256"]
         or result["gateway_unit"]["sha256"] != native.value["gateway_unit"]["sha256"]
         or result["native_observation_plan"]["sha256"] != native.sha256
     ):

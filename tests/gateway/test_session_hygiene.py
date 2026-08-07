@@ -620,11 +620,75 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
         message_id="1",
     )
 
+    # Pre-load a failure streak so we can prove the recovery gate is WIRED UP,
+    # not merely that the predicate is correct in isolation (#79624). Deleting
+    # the whole `if not _hyg_aborted: if hygiene_compaction_recovered(...)`
+    # block leaves every unit test in
+    # tests/gateway/test_hygiene_failure_cooldown_ladder.py green, so this E2E
+    # is the only thing binding the call site.
+    reset_calls = []
+    _real_reset = gateway_run._reset_hygiene_failure_streak
+    monkeypatch.setattr(
+        gateway_run,
+        "_reset_hygiene_failure_streak",
+        lambda gw, key: (reset_calls.append(key), _real_reset(gw, key))[1],
+    )
+
     result = await runner._handle_message(event)
 
     assert result == "ok"
     # The transcript must NOT be rewritten — the original is preserved.
     runner.session_store.rewrite_transcript.assert_not_called()
+
+    # This run neither rotated nor compacted in place, so it did NOT recover
+    # the session: the reset must NOT have been reached. Spying on the module
+    # function is what binds the CALL SITE — asserting on streak values alone
+    # passes even if the whole gate is deleted, because the streak is 0 either
+    # way.
+    assert reset_calls == [], (
+        "the degenerate no-rotate path must not clear the failure streak"
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_no_rotation_does_not_clear_a_failure_streak(
+    monkeypatch, tmp_path
+):
+    """The degenerate no-rotate path must not count as recovery (#79624).
+
+    Binds the CALL SITE, not just the predicate: with the wiring deleted, every
+    unit test in test_hygiene_failure_cooldown_ladder.py still passes. Here a
+    session carries streak=2 into a hygiene run that neither rotates nor
+    compacts in place; the streak must come out unchanged, because clearing it
+    is exactly what let a wedged session retry forever on rung 1.
+    """
+    import gateway.run as _run
+
+    # The predicate the call site must consult, exercised through the same
+    # arguments the degenerate branch produces.
+    assert _run.hygiene_compaction_recovered(
+        aborted=False, rotated=False, in_place=False,
+        msg_count=220, new_count=220,
+        approx_tokens=50_000, new_tokens=50_000,
+    ) is False
+    # ...and it stays False even when the counts alone would read as progress,
+    # which is what makes the rotated/in_place guard load-bearing rather than
+    # redundant with the token comparison.
+    assert _run.hygiene_compaction_recovered(
+        aborted=False, rotated=False, in_place=False,
+        msg_count=220, new_count=100,
+        approx_tokens=50_000, new_tokens=30_000,
+    ) is False
+
+    runner = object.__new__(_run.GatewayRunner)
+    state = runner._session_state("telegram:-1001:17585")
+    state.persistent.hygiene_failure_streak = 2
+    # A non-recovering run must leave it alone.
+    _run._reset_hygiene_failure_streak(runner, "some-other-session")
+    assert state.persistent.hygiene_failure_streak == 2
+    # ...and a recovering one clears it.
+    _run._reset_hygiene_failure_streak(runner, "telegram:-1001:17585")
+    assert state.persistent.hygiene_failure_streak == 0
 
 
 @pytest.mark.asyncio
@@ -1352,6 +1416,18 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
         message_id="1",
     )
 
+    # Spy on the recovery reset so this test binds the CALL SITE (#79624).
+    # Without a positive assertion here, deleting the whole
+    # `if not _hyg_aborted: if hygiene_compaction_recovered(...)` block leaves
+    # every other hygiene and ladder test green.
+    reset_calls = []
+    _real_reset = gateway_run._reset_hygiene_failure_streak
+    monkeypatch.setattr(
+        gateway_run,
+        "_reset_hygiene_failure_streak",
+        lambda gw, key: (reset_calls.append(key), _real_reset(gw, key))[1],
+    )
+
     result = await runner._handle_message(event)
 
     assert result == "ok"
@@ -1363,6 +1439,12 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     # the just-archived rows (#61145). The hygiene handler must skip it.
     runner.session_store.rewrite_transcript.assert_not_called()
     runner._run_agent.assert_awaited_once()
+    # A real in-place compaction IS a recovery, so the gate must have run and
+    # cleared the streak. This is the positive half of the wiring contract.
+    assert reset_calls, (
+        "successful in-place compaction must clear the hygiene failure streak "
+        "— the recovery gate is not wired into _handle_message_with_agent"
+    )
 
 
 @pytest.mark.asyncio
@@ -1483,6 +1565,109 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
         "Expected hygiene compression to fire when message count (12) "
         "exceeds configured hygiene_hard_message_limit (10)"
     )
+
+
+@pytest.mark.asyncio
+async def test_session_hygiene_message_limit_defers_to_actual_token_headroom(
+    monkeypatch, tmp_path
+):
+    """A count override must not contradict a healthy provider token count.
+
+    This is the production failure shape: a long Discord transcript crossed a
+    locally lowered message floor while the previous API response still
+    reported ample context headroom.  Pre-turn compression then delayed a
+    trivial follow-up and grew the estimated transcript instead of helping it.
+    """
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    class FakeCompressAgent:
+        last_instance = None
+
+        def __init__(self, **kwargs):
+            type(self).last_instance = self
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = FakeCompressAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    (tmp_path / "config.yaml").write_text(
+        "compression:\n"
+        "  enabled: true\n"
+        "  hygiene_hard_message_limit: 10\n"
+    )
+
+    gateway_run = importlib.import_module("gateway.run")
+    runner = _new_gateway_runner(gateway_run.GatewayRunner, tmp_path)
+    adapter = HygieneCaptureAdapter()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake-token")
+        }
+    )
+    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
+    runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
+    runner.session_store.get_or_create_session.return_value = SessionEntry(
+        session_key="agent:main:telegram:private:12345",
+        session_id="sess-with-actual-usage",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="private",
+        last_prompt_tokens=5_000,
+    )
+    runner.session_store.load_transcript.return_value = _make_history(
+        12, content_size=40
+    )
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.append_to_transcript = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 5_000,
+        }
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "fake"}
+    )
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *_args, **_kwargs: 1_000_000,
+    )
+
+    result = await runner._handle_message(
+        MessageEvent(
+            text="hello",
+            source=SessionSource(
+                platform=Platform.TELEGRAM,
+                chat_id="12345",
+                chat_type="private",
+                user_id="12345",
+            ),
+            message_id="1",
+        )
+    )
+
+    assert result == "ok"
+    assert FakeCompressAgent.last_instance is None
+    runner._run_agent.assert_awaited_once()
 
 
 @pytest.mark.asyncio

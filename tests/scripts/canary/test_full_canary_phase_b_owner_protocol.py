@@ -1160,6 +1160,104 @@ def test_trusted_canary_iam_runner_allows_only_exact_read_only_inventory(
     assert len(calls) == 1
 
 
+def test_fresh_writer_external_iam_reuses_one_immutable_inventory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from gateway import canonical_writer_host_authority as host_authority
+    from scripts.canary import foundation_preflight, host_preflight
+
+    shared = ("gcloud", "shared", "--format=json")
+    host_only = ("gcloud", "host-only", "--format=json")
+    calls: list[tuple[str, ...]] = []
+
+    class Identity:
+        stable_checks = 0
+
+        def require_stable(self) -> None:
+            self.stable_checks += 1
+
+        def run_canary_iam_read_only_json(self, argv):
+            logical = tuple(argv)
+            calls.append(logical)
+            return {"argv": list(logical), "source": "live"}
+
+    identity = Identity()
+
+    def collect_foundation(*, run_json):
+        observed = run_json(shared)
+        observed["mutated_by_foundation"] = True
+        return {"observed": observed}
+
+    def collect_host(*, run_json):
+        shared_observed = run_json(shared)
+        assert "mutated_by_foundation" not in shared_observed
+        return {
+            "shared": shared_observed,
+            "host_only": run_json(host_only),
+        }
+
+    foundation_report = {"kind": "foundation"}
+    host_report = {"kind": "host"}
+    monkeypatch.setattr(foundation_preflight, "collect", collect_foundation)
+    monkeypatch.setattr(
+        foundation_preflight,
+        "evaluate",
+        lambda evidence: (
+            foundation_report
+            if evidence["observed"]["source"] == "live"
+            else pytest.fail("foundation evidence drifted")
+        ),
+    )
+    monkeypatch.setattr(host_preflight, "collect", collect_host)
+    monkeypatch.setattr(
+        host_preflight,
+        "evaluate",
+        lambda evidence: (
+            host_report
+            if evidence["host_only"]["source"] == "live"
+            else pytest.fail("host evidence drifted")
+        ),
+    )
+
+    source_sha = _digest("source-approval")
+
+    class Receipt:
+        def require_fresh(
+            self,
+            now_unix: int,
+            *,
+            minimum_remaining_seconds: int,
+        ) -> None:
+            assert now_unix == 1_800_000_000
+            assert minimum_remaining_seconds == 720
+
+        def to_mapping(self) -> Mapping[str, Any]:
+            return {"schema": "external-iam", "source": source_sha}
+
+    def build_receipt(foundation, host, **kwargs):
+        assert foundation is foundation_report
+        assert host is host_report
+        assert kwargs == {
+            "source_approval_sha256": source_sha,
+            "now_unix": 1_800_000_000,
+        }
+        return Receipt()
+
+    monkeypatch.setattr(
+        host_authority,
+        "build_external_iam_receipt",
+        build_receipt,
+    )
+
+    assert launcher.collect_fresh_writer_external_iam(
+        owner_identity=identity,
+        source_approval_sha256=source_sha,
+        now_unix=1_800_000_000,
+    ) == {"schema": "external-iam", "source": source_sha}
+    assert calls == [shared, host_only]
+    assert identity.stable_checks == 2
+
+
 def test_owner_cli_routes_explicit_stopped_writer_activation(
     monkeypatch: pytest.MonkeyPatch,
     capfd: pytest.CaptureFixture[str],
@@ -1284,6 +1382,70 @@ def test_writer_activation_bridge_invokes_only_packaged_sealed_module() -> None:
     assert observed["kwargs"]["input_bytes"] == frame
 
 
+def test_stopped_release_remote_input_builds_frame_after_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = object.__new__(launcher.IapStoppedReleaseTransport)
+    events: list[str] = []
+    snapshot = (_digest("instance"), _digest("project"), _digest("profile"))
+
+    class Identity:
+        def require_stable(self) -> None:
+            events.append("owner-stable")
+
+    class Executable:
+        def trusted_command_prefix(self) -> tuple[str, ...]:
+            return ("/trusted/python",)
+
+    transport._owner_identity = Identity()
+    transport._gcloud_executable = Executable()
+    transport._gcloud_configuration = object()
+    transport._authorization_snapshot = lambda _account: (
+        events.append("authorization") or snapshot
+    )
+    transport._remote_argv = lambda _remote, *, account: (
+        events.append("remote-argv") or ("/trusted/gcloud", account)
+    )
+    transport._validate_dry_run = lambda _argv: events.append("dry-run")
+    transport._postflight = lambda: events.append("postflight")
+    monkeypatch.setattr(
+        launcher,
+        "_owner_gcloud_environment",
+        lambda *_args, **_kwargs: {},
+    )
+
+    def run(argv, **kwargs):
+        events.append("remote-run")
+        assert kwargs["input"] == b"fresh-frame"
+        return subprocess.CompletedProcess(argv, 0, stdout=b'{}\n')
+
+    transport._preflight_runner = run
+
+    def build_frame() -> bytes:
+        events.append("frame-factory")
+        return b"fresh-frame"
+
+    completed = transport._run_remote_input(
+        ("/fixed/remote",),
+        account="owner@example.com",
+        input_factory=build_frame,
+    )
+
+    assert completed.returncode == 0
+    assert events == [
+        "authorization",
+        "remote-argv",
+        "dry-run",
+        "authorization",
+        "frame-factory",
+        "owner-stable",
+        "postflight",
+        "remote-run",
+        "postflight",
+        "authorization",
+    ]
+
+
 def test_writer_activation_bridge_rejects_noncanonical_remote_json() -> None:
     release_sha = "a" * 40
     transport = object.__new__(launcher.IapWriterActivationBridgeTransport)
@@ -1342,10 +1504,19 @@ def test_stopped_writer_activation_orchestrates_only_fixed_packaged_sequence(
         arguments,
         account,
         stdin_frame=None,
+        stdin_frame_factory=None,
         **_kwargs,
     ):
         assert _release_sha == release_sha
         assert account == "owner@example.com"
+        assert not (
+            stdin_frame is not None and stdin_frame_factory is not None
+        )
+        if module == launcher.WRITER_ACTIVATION_BRIDGE_MODULE:
+            assert stdin_frame is None
+            assert callable(stdin_frame_factory)
+        if stdin_frame_factory is not None:
+            stdin_frame = stdin_frame_factory()
         calls.append((module, tuple(arguments), stdin_frame))
         return {"call": len(calls)}
 

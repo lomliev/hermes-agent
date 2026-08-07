@@ -390,6 +390,16 @@ def _stopped_receipt(native_plan=None):
             "main_pid": 0,
         }
 
+    readiness = {
+        "unit_name": plan.value["phase_b_readiness_unit"]["name"],
+        "load_state": "loaded",
+        "active_state": "inactive",
+        "sub_state": "dead",
+        "unit_file_state": "static",
+        "main_pid": 0,
+        "fragment_path": plan.value["phase_b_readiness_unit"]["path"],
+    }
+
     return host_authority.NativeObservationReceipt.from_mapping({
         "schema": host_authority.NATIVE_OBSERVATION_RECEIPT_SCHEMA,
         "native_observation_plan_sha256": plan.sha256,
@@ -406,6 +416,7 @@ def _stopped_receipt(native_plan=None):
             + host_authority.NATIVE_OBSERVATION_TTL_SECONDS * 1_000_000_000,
             "gateway_service": live("gateway", 4242),
             "writer_service": live("writer", 4343),
+            "phase_b_readiness_service": readiness,
             "discord_absence": discord,
             "legacy_helper_absence": {
                 "path": str(host_authority.LEGACY_CLOUD_SQL_HELPER_PATH),
@@ -427,6 +438,7 @@ def _stopped_receipt(native_plan=None):
             "finalized_at_boottime_ns": observed + 1_000_000_000,
             "gateway_service": stopped("gateway"),
             "writer_service": stopped("writer"),
+            "phase_b_readiness_service": readiness,
             "discord_absence": discord,
         },
     })
@@ -712,6 +724,51 @@ def test_stager_rejects_nonproduction_output_path(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="production-pinned"):
         planner._write_atomic_root_staged_file(tmp_path / "plan.json", b"{}")
+
+
+def test_stager_accepts_production_pinned_phase_b_readiness_unit(
+    tmp_path,
+    monkeypatch,
+):
+    staging = tmp_path / "staged"
+    staging.mkdir(mode=0o700)
+    target = staging / "muncho-canonical-writer-phase-b-readiness.service"
+    target.write_bytes(b"existing-unit")
+
+    monkeypatch.setattr(
+        planner,
+        "DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH",
+        target,
+    )
+    monkeypatch.setattr(planner, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(
+        planner,
+        "_validate_root_parent_chain",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        planner.os,
+        "lstat",
+        lambda _path: SimpleNamespace(
+            st_mode=0o040700,
+            st_uid=0,
+            st_gid=0,
+        ),
+    )
+    monkeypatch.setattr(
+        planner.os,
+        "listxattr",
+        lambda _path: [],
+        raising=False,
+    )
+    monkeypatch.setattr(
+        planner.os.path,
+        "lexists",
+        lambda path: Path(path) == target,
+    )
+
+    with pytest.raises(FileExistsError):
+        planner._write_atomic_root_staged_file(target, b"new-unit")
 
 
 def test_stager_blocks_existing_fixed_path_without_overwrite_or_cleanup(

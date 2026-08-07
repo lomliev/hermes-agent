@@ -18,6 +18,7 @@ from gateway import canonical_writer_foundation_phase_b as foundation_phase_b
 import gateway.canonical_writer_preflight_publisher as preflight_publisher
 from gateway import canonical_writer_schema_reconciliation_bootstrap as reconciliation_bootstrap
 from scripts.canary import full_canary_owner_launcher as launcher
+from scripts.canary import stopped_writer_residue_recovery as residue_recovery
 from scripts.canary import writer_release
 from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 
@@ -120,7 +121,7 @@ def _stopped_release_source_transport(monkeypatch, *, initially_exists=True):
                 stdout=RELEASE_SHA.encode("ascii") if exists else b"",
             )
         if "clone" in argv:
-            raise launcher.OwnerLauncherError("stopped_release_remote_failed")
+            raise launcher.OwnerLauncherError(str(kwargs["failure_code"]))
         if argv[-3:] == ("remote", "get-url", "origin"):
             stdout = f"{launcher.STOPPED_RELEASE_SOURCE_REPOSITORY}\n".encode()
         elif argv[-2:] == ("rev-parse", "--is-inside-work-tree"):
@@ -151,6 +152,9 @@ def test_stopped_release_source_prepare_resumes_exact_no_checkout_clone(
     ) == f"{launcher.STOPPED_RELEASE_SOURCE_BASE}/{RELEASE_SHA}"
 
     commands = [command for command, _kwargs in calls]
+    failure_codes = {
+        command: kwargs.get("failure_code") for command, kwargs in calls
+    }
     checkout = next(command for command in commands if "checkout" in command)
     assert checkout[-3:] == ("checkout", "--detach", RELEASE_SHA)
     assert any(command[-3:] == ("remote", "get-url", "origin") for command in commands)
@@ -159,11 +163,70 @@ def test_stopped_release_source_prepare_resumes_exact_no_checkout_clone(
         for command in commands
     )
     assert any("--porcelain=v1" in command for command in commands)
+    assert failure_codes[commands[0]] == "stopped_release_source_probe_failed"
+    assert failure_codes[checkout] == "stopped_release_source_checkout_failed"
+    assert {
+        kwargs.get("failure_code")
+        for command, kwargs in calls
+        if command[-3:] == ("remote", "get-url", "origin")
+    } == {"stopped_release_repository_probe_failed"}
+    assert {
+        kwargs.get("failure_code")
+        for command, kwargs in calls
+        if "--porcelain=v1" in command
+    } == {"stopped_release_status_probe_failed"}
     assert all(shlex.join(command) == " ".join(command) for command in commands)
     if initially_exists:
         assert not any("clone" in command for command in commands)
     else:
         assert sum("clone" in command for command in commands) == 1
+        assert {
+            kwargs.get("failure_code")
+            for command, kwargs in calls
+            if "clone" in command
+        } == {"stopped_release_source_clone_failed"}
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_failure_code"),
+    (
+        ("plan", "stopped_release_plan_remote_failed"),
+        ("apply", "stopped_release_apply_remote_failed"),
+    ),
+)
+def test_stopped_release_command_binds_secret_free_remote_failure_stage(
+    monkeypatch,
+    command,
+    expected_failure_code,
+):
+    transport = object.__new__(launcher.IapStoppedReleaseTransport)
+    captured: dict[str, object] = {}
+
+    def run_remote(remote, **kwargs):
+        captured["remote"] = tuple(remote)
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(
+            remote,
+            0,
+            stdout=b'{}\n',
+        )
+
+    monkeypatch.setattr(transport, "_run_remote", run_remote)
+    if command == "plan":
+        transport._run_release_command(
+            RELEASE_SHA,
+            command,
+            account="owner@example.com",
+        )
+    else:
+        transport._run_release_command(
+            RELEASE_SHA,
+            command,
+            account="owner@example.com",
+            approved_plan_sha256="a" * 64,
+        )
+
+    assert captured["failure_code"] == expected_failure_code
 
 
 def test_stopped_release_source_prepare_rejects_wrong_repository(monkeypatch):
@@ -187,6 +250,57 @@ def test_stopped_release_source_prepare_rejects_wrong_repository(monkeypatch):
         match="stopped_release_source_repository_invalid",
     ):
         transport._prepare_source(RELEASE_SHA, account="owner@example.com")
+
+
+@pytest.mark.parametrize("command", ("plan", "apply"))
+def test_stopped_writer_residue_command_uses_exact_source_module(
+    monkeypatch,
+    command,
+):
+    transport = object.__new__(launcher.IapStoppedWriterResidueRecoveryTransport)
+    captured: dict[str, object] = {}
+
+    def run_remote(remote, **kwargs):
+        captured["remote"] = tuple(remote)
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(remote, 0, stdout=b'{}\n')
+
+    monkeypatch.setattr(transport, "_run_remote", run_remote)
+    value = transport._run_recovery_command(
+        RELEASE_SHA,
+        command,
+        account="owner@example.com",
+        approved_plan_sha256=("d" * 64 if command == "apply" else None),
+    )
+
+    remote = captured["remote"]
+    module_index = remote.index("-m") + 1
+    assert value == {}
+    assert remote[module_index : module_index + 4] == (
+        residue_recovery.__name__,
+        command,
+        "--revision",
+        RELEASE_SHA,
+    )
+    assert captured["allowed_returncodes"] == frozenset({0, 2})
+    assert captured["failure_code"] == "stopped_release_residue_remote_failed"
+    if command == "apply":
+        assert remote[-2:] == ("--approved-plan-sha256", "d" * 64)
+    else:
+        assert remote[-2:] == ("--revision", RELEASE_SHA)
+
+
+def test_stopped_writer_residue_cli_action_is_mutually_exclusive():
+    arguments = launcher._cli_parser().parse_args(
+        [
+            "--release-sha",
+            RELEASE_SHA,
+            "--recover-stopped-writer-residue",
+        ]
+    )
+
+    assert arguments.recover_stopped_writer_residue is True
+    assert arguments.publish_stopped_release is False
 
 
 def _canonical(value: Mapping[str, object]) -> bytes:
@@ -1185,6 +1299,32 @@ def test_schema_reconciliation_control_frames_are_two_stage_and_exact():
         )
 
 
+def test_schema_upgrade_frames_are_two_stage_and_exact():
+    credential = bytearray(b"x" * launcher.SCHEMA_UPGRADE_CREDENTIAL_BYTES)
+    apply = launcher._schema_upgrade_frame(
+        launcher.SCHEMA_UPGRADE_APPLY_MAGIC,
+        {"ok": True},
+        credential=credential,
+    )
+    cleanup = launcher._schema_upgrade_frame(
+        launcher.SCHEMA_UPGRADE_CLEANUP_MAGIC,
+        {"ok": True},
+    )
+
+    launcher._IapRemoteSession._validate_schema_upgrade_frame(apply, sequence=0)
+    launcher._IapRemoteSession._validate_schema_upgrade_frame(cleanup, sequence=1)
+    assert apply[:4] == b"MCU1"
+    assert cleanup[:4] == b"MCX1"
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="schema_upgrade_remote_frame_invalid",
+    ):
+        launcher._IapRemoteSession._validate_schema_upgrade_frame(
+            apply,
+            sequence=1,
+        )
+
+
 def test_schema_reconciliation_transport_and_signatures_are_domain_separated():
     assert launcher.IapSchemaReconciliationTransport._MODULE == (
         "gateway.canonical_writer_schema_reconciliation_bootstrap"
@@ -1213,6 +1353,19 @@ def test_schema_reconciliation_transport_and_signatures_are_domain_separated():
         launcher.IapSchemaReconciliationControlBootstrapTransport._COMMANDS
         == {"install"}
     )
+    assert launcher.IapCanonicalWriterSchemaUpgradeTransport._MODULE == (
+        "gateway.canonical_writer_schema_upgrade_runtime"
+    )
+    assert launcher.IapCanonicalWriterSchemaUpgradeTransport._COMMANDS == {
+        "upgrade"
+    }
+    assert {
+        launcher.SCHEMA_UPGRADE_APPLY_SSHSIG_NAMESPACE,
+        launcher.SCHEMA_UPGRADE_CLEANUP_SSHSIG_NAMESPACE,
+    } == {
+        "muncho-canonical-writer-schema-upgrade-apply-owner-v1",
+        "muncho-canonical-writer-schema-upgrade-cleanup-owner-v1",
+    }
 
 
 def test_schema_reconciliation_cli_action_is_mutually_exclusive():
@@ -1240,12 +1393,19 @@ def test_schema_reconciliation_cli_action_is_mutually_exclusive():
     ])
     assert control_arguments.bootstrap_schema_reconciliation_control is True
     assert control_arguments.reconcile_legacy_canary_db is False
+    upgrade_arguments = launcher._cli_parser().parse_args([
+        "--release-sha",
+        RELEASE_SHA,
+        "--upgrade-canonical-writer-schema",
+    ])
+    assert upgrade_arguments.upgrade_canonical_writer_schema is True
+    assert upgrade_arguments.bootstrap_schema_reconciliation_control is False
     with pytest.raises(SystemExit):
         launcher._cli_parser().parse_args([
             "--release-sha",
             RELEASE_SHA,
             "--bootstrap-schema-reconciliation-control",
-            "--reconcile-legacy-canary-db",
+            "--upgrade-canonical-writer-schema",
         ])
 
 
@@ -1562,11 +1722,108 @@ def test_schema_reconciliation_control_validates_gate_with_post_read_time(
     assert observed == [2_000]
 
 
+def test_schema_upgrade_validates_gate_with_post_read_time(monkeypatch):
+    plan_sha256 = "1" * 64
+    expected_username = launcher.ADMIN_USERNAME_PREFIX + plan_sha256[:16]
+    authority = SimpleNamespace(
+        public_fingerprint=launcher.PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT,
+        public_key_ed25519_hex="2" * 64,
+        key_id="3" * 64,
+    )
+    gate = {
+        "release_revision": RELEASE_SHA,
+        "owner_subject_sha256": OWNER_SHA,
+        "owner_public_key_ed25519_hex": authority.public_key_ed25519_hex,
+        "owner_key_id": authority.key_id,
+        "owner_public_fingerprint": authority.public_fingerprint,
+        "temporary_schema_upgrade_admin_username": expected_username,
+        "temporary_schema_upgrade_admin_username_sha256": hashlib.sha256(
+            expected_username.encode("ascii")
+        ).hexdigest(),
+        "database_roles_requested": list(launcher.SCHEMA_UPGRADE_DATABASE_ROLES),
+        "plan_sha256": plan_sha256,
+        "expires_at_unix": 4_000,
+    }
+
+    class _Session:
+        gate_read = False
+
+        def read_gate(self):
+            self.gate_read = True
+            return gate
+
+        def close(self):
+            return None
+
+    session = _Session()
+
+    class _Identity:
+        def account_for_read_only_preflight(self):
+            return "owner@example.com"
+
+        def bind_approved_subject(self, expected):
+            assert expected == OWNER_SHA
+            raise launcher.OwnerLauncherError("stop_after_upgrade_gate_validation")
+
+    class _Signer:
+        def inspect(self):
+            return authority
+
+    observed = []
+
+    def validate_gate_for_owner(value, **kwargs):
+        assert session.gate_read is True
+        assert value is gate
+        observed.append(kwargs["now_unix"])
+        return gate
+
+    from gateway import canonical_writer_schema_upgrade_runtime as upgrade_runtime
+
+    monkeypatch.setattr(
+        upgrade_runtime,
+        "validate_gate_for_owner",
+        validate_gate_for_owner,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "PHASE_B_PINNED_APPROVAL_SOURCE_SHA256",
+        hashlib.sha256(authority.public_fingerprint.encode("ascii")).hexdigest(),
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="stop_after_upgrade_gate_validation",
+    ):
+        launcher.upgrade_canonical_writer_schema(
+            release_sha=RELEASE_SHA,
+            transport=SimpleNamespace(
+                open_upgrade=lambda release: (
+                    session
+                    if release == RELEASE_SHA
+                    else pytest.fail("wrong release")
+                )
+            ),
+            cloud_sql_client=object(),
+            owner_identity=_Identity(),
+            now=lambda: 2_000 if session.gate_read else 1_000,
+            signer=_Signer(),
+            secret_hardener=lambda: None,
+            provenance_guard=lambda release: (
+                None
+                if release == RELEASE_SHA
+                else pytest.fail("wrong release")
+            ),
+        )
+
+    assert observed == [2_000]
+
+
 @pytest.mark.parametrize(
     "action",
     (
         "--reconcile-legacy-canary-db",
         "--bootstrap-schema-reconciliation-control",
+        "--upgrade-canonical-writer-schema",
     ),
 )
 def test_schema_reconciliation_cli_rejects_external_iam_before_runtime(
@@ -1755,6 +2012,65 @@ def _role_bound_schema_reconciliation_cloud_boundary(
     return boundary
 
 
+def _role_bound_schema_reconciliation_control_boundary(
+    database_roles: list[str],
+) -> launcher.CloudSqlSchemaReconciliationControlAdmin:
+    username = "muncho_canary_control_" + "a" * 16
+    operation = ("CREATE_USER", "DONE", OWNER_SHA, True)
+    operations = {"authority-operation": operation}
+    client = _RoleBoundReconciliationClient(username, database_roles)
+    boundary = launcher.CloudSqlSchemaReconciliationControlAdmin(client)
+    boundary._mutation_operation_baseline = frozenset()
+    boundary._mutation_relevant_baseline = {}
+    boundary._confirmed_authority_operation_name = "authority-operation"
+    boundary._confirmed_authority_operation_type = "CREATE_USER"
+    boundary._expected_owner_subject_sha256 = OWNER_SHA
+    boundary._expected_mutation_context_sha256 = "f" * 64
+    boundary._instance_operations = lambda: operations
+    boundary._stable_instance_operations = lambda: operations
+    return boundary
+
+
+def _role_bound_schema_upgrade_boundary(
+    database_roles: list[str],
+) -> launcher.CloudSqlSchemaUpgradeAdmin:
+    username = "muncho_canary_reconciler_" + "a" * 16
+    operation = ("CREATE_USER", "DONE", OWNER_SHA, True)
+    operations = {"authority-operation": operation}
+    client = _RoleBoundReconciliationClient(username, database_roles)
+    boundary = launcher.CloudSqlSchemaUpgradeAdmin(client)
+    boundary._mutation_operation_baseline = frozenset()
+    boundary._mutation_relevant_baseline = {}
+    boundary._confirmed_authority_operation_name = "authority-operation"
+    boundary._confirmed_authority_operation_type = "CREATE_USER"
+    boundary._expected_owner_subject_sha256 = OWNER_SHA
+    boundary._expected_mutation_context_sha256 = "f" * 64
+    boundary._instance_operations = lambda: operations
+    boundary._stable_instance_operations = lambda: operations
+    return boundary
+
+
+def test_schema_upgrade_cloud_boundary_seals_exact_dual_role_authority() -> None:
+    username = "muncho_canary_reconciler_" + "a" * 16
+    boundary = _role_bound_schema_upgrade_boundary(
+        list(launcher.SCHEMA_UPGRADE_DATABASE_ROLES)
+    )
+
+    receipt = boundary.temporary_schema_upgrade_admin_authority_receipt(
+        username
+    )
+
+    assert receipt["schema"] == launcher.SCHEMA_UPGRADE_ADMIN_AUTHORITY_RECEIPT_SCHEMA
+    assert receipt["database_roles_requested"] == list(
+        launcher.SCHEMA_UPGRADE_DATABASE_ROLES
+    )
+    assert receipt["broad_schema_upgrade_authority"] is True
+    assert receipt["normal_reconciliation_executor"] is False
+    unsigned = dict(receipt)
+    digest = unsigned.pop("receipt_sha256")
+    assert digest == hashlib.sha256(launcher._canonical_bytes(unsigned)).hexdigest()
+
+
 def test_schema_reconciliation_cloud_boundary_uses_fenced_describes_for_partial_list() -> None:
     username = "muncho_canary_reconciler_" + "a" * 16
     boundary = _role_bound_schema_reconciliation_cloud_boundary(
@@ -1822,7 +2138,7 @@ def test_cloud_sql_cleanup_gets_full_quiet_window_after_own_late_delete(
             self.value += seconds
 
     clock = _Clock()
-    username = "muncho_canary_admin_" + "a" * 16
+    username = "muncho_canary_reconciler_" + "a" * 16
     boundary = launcher.CloudSqlTemporaryAdmin(
         object(),
         monotonic=clock.monotonic,
@@ -1884,7 +2200,7 @@ def test_cloud_sql_cleanup_does_not_extend_for_unrelated_ledger_changes(
             self.value += seconds
 
     clock = _Clock()
-    username = "muncho_canary_admin_" + "b" * 16
+    username = "muncho_canary_reconciler_" + "b" * 16
     boundary = launcher.CloudSqlTemporaryAdmin(
         object(),
         monotonic=clock.monotonic,
@@ -2123,28 +2439,24 @@ def test_schema_reconciliation_cloud_update_revokes_every_stale_role_in_query() 
         "name": [username],
         "revokeExistingRoles": ["true"],
     }
-    assert body["etag"] == "stale-user-etag"
-    assert body["revokeExistingRoles"] is True
+    assert body == {
+        "etag": "stale-user-etag",
+        "name": username,
+        "password": "q" * 64,
+        "type": "BUILT_IN",
+    }
 
 
 def test_schema_reconciliation_control_admin_is_separate_broad_one_time_login():
     username = "muncho_canary_control_" + "a" * 16
-    operation = ("CREATE_USER", "DONE", OWNER_SHA, True)
-    boundary = launcher.CloudSqlSchemaReconciliationControlAdmin(object())
-    boundary._mutation_operation_baseline = frozenset()
-    boundary._mutation_relevant_baseline = {}
-    boundary._confirmed_authority_operation_name = "authority-operation"
-    boundary._confirmed_authority_operation_type = "CREATE_USER"
-    boundary._expected_owner_subject_sha256 = OWNER_SHA
-    boundary._expected_mutation_context_sha256 = "f" * 64
-    boundary._stable_instance_operations = lambda: {
-        "authority-operation": operation
-    }
-    boundary.require_current_authority = lambda value: (
-        None if value == username else pytest.fail("wrong control username")
+    boundary = _role_bound_schema_reconciliation_control_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES)
     )
 
     assert boundary._create_user_body(username, "q" * 64) == {
+        "databaseRoles": list(
+            launcher.SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES
+        ),
         "instance": launcher.SQL_INSTANCE,
         "name": username,
         "password": "q" * 64,
@@ -2156,8 +2468,13 @@ def test_schema_reconciliation_control_admin_is_separate_broad_one_time_login():
         launcher.SCHEMA_RECONCILIATION_CONTROL_ADMIN_AUTHORITY_RECEIPT_SCHEMA
     )
     assert receipt["broad_bootstrap_authority"] is True
-    assert receipt["database_roles_requested"] == []
+    assert receipt["database_roles_requested"] == list(
+        launcher.SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES
+    )
     assert receipt["normal_reconciliation_executor"] is False
+    assert receipt["resource_etag_sha256"] == hashlib.sha256(
+        b"exact-etag-v1"
+    ).hexdigest()
     assert receipt["receipt_sha256"] == hashlib.sha256(
         _canonical({
             key: value
@@ -2171,6 +2488,46 @@ def test_schema_reconciliation_control_admin_is_separate_broad_one_time_login():
         ),
         "temporary_control_admin_absent": True,
     }
+
+
+@pytest.mark.parametrize(
+    "database_roles",
+    (
+        ["cloudsqlsuperuser"],
+        ["canonical_brain_migration_owner"],
+        [
+            *launcher.SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES,
+            "canonical_brain_schema_reconciler",
+        ],
+    ),
+)
+def test_schema_reconciliation_control_admin_rejects_inexact_roles(
+    database_roles: list[str],
+) -> None:
+    username = "muncho_canary_control_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_control_boundary(
+        database_roles
+    )
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_schema_reconciliation_executor_resource_invalid",
+    ):
+        boundary.temporary_control_admin_authority_receipt(username)
+
+
+def test_schema_reconciliation_control_admin_rejects_invalid_etag() -> None:
+    username = "muncho_canary_control_" + "a" * 16
+    boundary = _role_bound_schema_reconciliation_control_boundary(
+        list(launcher.SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES)
+    )
+    boundary._client.describe_payload["etag"] = ""
+
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="cloud_sql_schema_reconciliation_executor_resource_invalid",
+    ):
+        boundary.temporary_control_admin_authority_receipt(username)
 
 
 def test_schema_reconciliation_uses_role_bound_cloud_boundary_by_default() -> None:

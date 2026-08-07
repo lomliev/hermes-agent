@@ -145,6 +145,9 @@ WRITER_PREFLIGHT_FAILURE_SCHEMA = (
     "muncho-writer-preflight-publication-failure.v2"
 )
 WRITER_PREFLIGHT_MODULE = "gateway.canonical_writer_preflight_publisher"
+STOPPED_WRITER_RESIDUE_RECOVERY_MODULE = (
+    "scripts.canary.stopped_writer_residue_recovery"
+)
 WRITER_PREFLIGHT_EVIDENCE_BASE = (
     "/var/lib/muncho-writer-canary-evidence/staged-publication"
 )
@@ -196,13 +199,27 @@ SCHEMA_RECONCILIATION_EXECUTOR_ABSENCE_RECEIPT_SCHEMA = (
     "muncho-cloud-sql-executor-absence-evidence.v2"
 )
 SCHEMA_RECONCILIATION_CONTROL_ADMIN_AUTHORITY_RECEIPT_SCHEMA = (
-    "muncho-cloud-sql-schema-reconciliation-control-admin-authority.v1"
+    "muncho-cloud-sql-schema-reconciliation-control-admin-authority.v2"
 )
 SCHEMA_RECONCILIATION_CONTROL_ADMIN_ABSENCE_RECEIPT_SCHEMA = (
     "muncho-cloud-sql-schema-reconciliation-control-admin-absence.v1"
 )
+SCHEMA_UPGRADE_ADMIN_AUTHORITY_RECEIPT_SCHEMA = (
+    "muncho-cloud-sql-schema-upgrade-admin-authority.v1"
+)
+SCHEMA_UPGRADE_ADMIN_ABSENCE_RECEIPT_SCHEMA = (
+    "muncho-cloud-sql-schema-upgrade-admin-absence.v1"
+)
 SCHEMA_RECONCILIATION_DATABASE_ROLES = (
     "canonical_brain_schema_reconciler",
+)
+SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES = (
+    "canonical_brain_migration_owner",
+    "cloudsqlsuperuser",
+)
+SCHEMA_UPGRADE_DATABASE_ROLES = (
+    "canonical_brain_schema_reconciler",
+    "cloudsqlsuperuser",
 )
 CANARY_BOOTSTRAP_LOGIN = "canonical_brain_canary_bootstrap_login"
 CANARY_BOOTSTRAP_DATABASE_ROLE = "canonical_brain_canary_bootstrap"
@@ -355,6 +372,15 @@ SCHEMA_RECONCILIATION_CONTROL_INSTALL_SSHSIG_NAMESPACE = (
 SCHEMA_RECONCILIATION_CONTROL_CLEANUP_SSHSIG_NAMESPACE = (
     "muncho-canonical-writer-schema-reconciliation-control-cleanup-owner-v1"
 )
+SCHEMA_UPGRADE_APPLY_MAGIC = b"MCU1"
+SCHEMA_UPGRADE_CLEANUP_MAGIC = b"MCX1"
+SCHEMA_UPGRADE_CREDENTIAL_BYTES = 64
+SCHEMA_UPGRADE_APPLY_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-upgrade-apply-owner-v1"
+)
+SCHEMA_UPGRADE_CLEANUP_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-schema-upgrade-cleanup-owner-v1"
+)
 _SCHEMA_RECONCILIATION_REMOTE_FAILURE_STAGES = frozenset({
     "a1_to_p1",
     "a2_to_i2",
@@ -397,7 +423,11 @@ FINAL_APPROVAL_INSTALL_RECEIPT_SCHEMA = (
 FINAL_APPROVAL_CANCEL_RECEIPT_SCHEMA = (
     "muncho-full-canary-final-approval-cancel-receipt.v2"
 )
-ADMIN_USERNAME_PREFIX = "muncho_canary_admin_"
+# The installed canonical-truth observer admits only the fixed one-time
+# reconciler namespace. The schema-upgrade action uses that namespace with a
+# stronger, exact dual-role authority receipt; a separate admin prefix cannot
+# cross the installed observer boundary.
+ADMIN_USERNAME_PREFIX = "muncho_canary_reconciler_"
 SCHEMA_RECONCILIATION_EXECUTOR_USERNAME_PREFIX = "muncho_canary_reconciler_"
 SCHEMA_RECONCILIATION_CONTROL_ADMIN_USERNAME_PREFIX = "muncho_canary_control_"
 ADMIN_FRAME_MAGIC = b"MCA2"
@@ -427,6 +457,9 @@ TRUSTED_SDK_PUBLICATION_INTENT_SCHEMA = (
 )
 TRUSTED_SDK_BYTECODE_REPAIR_RECEIPT_SCHEMA = (
     "muncho-full-canary-owner-trusted-sdk-bytecode-repair-receipt.v1"
+)
+SCHEMA_RECONCILIATION_CONTROL_SUCCESSOR_RECOVERY_SCHEMA = (
+    "muncho-schema-reconciliation-control-successor-recovery.v1"
 )
 TRUSTED_SDK_BYTECODE_REPAIR_INTENT_SCHEMA = (
     "muncho-full-canary-owner-trusted-sdk-bytecode-repair-intent.v1"
@@ -515,6 +548,7 @@ _GCLOUD_SDK_ARCHIVE_BYTES = 60_511_521
 _GCLOUD_SDK_ARCHIVE_SHA256 = (
     "2d4ab8eb0a9362a69feabade6df4163763cd989cb840dc3f7ced5ac24dde6e67"
 )
+_GCLOUD_PYTHON_CACHE_PREFIX = "/var/empty/muncho-canary"
 _TRUSTED_SDK_RELATIVE = ".hermes/trusted/google-cloud-sdk-569.0.0"
 _TRUSTED_SDK_PUBLICATION_INTENT_RELATIVE = (
     ".hermes/trusted/trusted-sdk-publication-569.0.0-"
@@ -648,7 +682,7 @@ _GCLOUD_PYTHON_ISOLATION_ARGS = (
     "-S",
     "-B",
     "-X",
-    "pycache_prefix=/var/empty/muncho-canary",
+    f"pycache_prefix={_GCLOUD_PYTHON_CACHE_PREFIX}",
 )
 _AMBIGUOUS_CLOUD_SQL_CREATE_ERRORS = frozenset({
     "cloud_sql_operation_failed",
@@ -669,7 +703,7 @@ _OWNER_GATE_RFC3339_TIMESTAMP = re.compile(
     r"(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})$"
 )
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
-_ADMIN_USERNAME = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
+_ADMIN_USERNAME = re.compile(r"^muncho_canary_reconciler_[0-9a-f]{16}$")
 _SCHEMA_RECONCILIATION_EXECUTOR_USERNAME = re.compile(
     r"^muncho_canary_reconciler_[0-9a-f]{16}$"
 )
@@ -1691,6 +1725,8 @@ class _PhaseBOwnerExternalSigner:
                 SCHEMA_RECONCILIATION_EXECUTOR_CLEANUP_SSHSIG_NAMESPACE,
                 SCHEMA_RECONCILIATION_CONTROL_INSTALL_SSHSIG_NAMESPACE,
                 SCHEMA_RECONCILIATION_CONTROL_CLEANUP_SSHSIG_NAMESPACE,
+                SCHEMA_UPGRADE_APPLY_SSHSIG_NAMESPACE,
+                SCHEMA_UPGRADE_CLEANUP_SSHSIG_NAMESPACE,
                 OWNER_GATE_HOST_IDENTITY_SSHSIG_NAMESPACE,
                 PRODUCTION_STORAGE_IAM_SSHSIG_NAMESPACE,
             }
@@ -1970,6 +2006,35 @@ def _schema_reconciliation_control_frame(
         raise OwnerLauncherError(
             "schema_reconciliation_control_owner_frame_invalid"
         )
+    frame = bytearray(magic + struct.pack(">I", len(payload)) + payload)
+    if credential is not None:
+        frame.extend(credential)
+    return frame
+
+
+def _schema_upgrade_frame(
+    magic: bytes,
+    claim: Mapping[str, Any],
+    *,
+    credential: bytearray | None = None,
+) -> bytearray:
+    if magic not in {
+        SCHEMA_UPGRADE_APPLY_MAGIC,
+        SCHEMA_UPGRADE_CLEANUP_MAGIC,
+    } or not isinstance(claim, Mapping):
+        raise OwnerLauncherError("schema_upgrade_owner_frame_invalid")
+    expects_credential = magic == SCHEMA_UPGRADE_APPLY_MAGIC
+    if expects_credential:
+        if (
+            not isinstance(credential, bytearray)
+            or len(credential) != SCHEMA_UPGRADE_CREDENTIAL_BYTES
+        ):
+            raise OwnerLauncherError("schema_upgrade_owner_frame_invalid")
+    elif credential is not None:
+        raise OwnerLauncherError("schema_upgrade_owner_frame_invalid")
+    payload = _canonical_bytes(claim)
+    if not 2 <= len(payload) <= PHASE_B_MAX_RESPONSE_BYTES:
+        raise OwnerLauncherError("schema_upgrade_owner_frame_invalid")
     frame = bytearray(magic + struct.pack(">I", len(payload)) + payload)
     if credential is not None:
         frame.extend(credential)
@@ -4294,14 +4359,43 @@ class TrustedGcloudExecutable:
         self._sdk_root = str(Path(wrapper_path).parent.parent)
         self._gcloud_module = os.path.join(self._sdk_root, "lib", "gcloud.py")
         self._python_root = str(Path(self._python.absolute_path()).parent.parent)
+        # The complete content digest below is the publication proof.  Later
+        # checks in this same short-lived owner process must still fail closed
+        # on drift, but re-reading roughly half a gigabyte before every gcloud
+        # call can outlive the five-minute signed mutation claims.  Pin a
+        # recursive identity digest once and use it for those same-process
+        # rechecks.  It includes every path plus device/inode, type, ownership,
+        # mode, link count, size, mtime and ctime; an unprivileged content
+        # change cannot restore ctime.  A new process always repeats the full
+        # content proof before it can obtain this identity baseline.
+        sdk_identity_before = self._capture_tree_identity(
+            self._sdk_root,
+            scope="sdk",
+        )
         self._sdk_fingerprint = self._capture_tree(
             self._sdk_root,
             scope="sdk",
+        )
+        self._sdk_identity_fingerprint = self._capture_tree_identity(
+            self._sdk_root,
+            scope="sdk",
+        )
+        if self._sdk_identity_fingerprint != sdk_identity_before:
+            raise OwnerLauncherError("trusted_gcloud_sdk_changed")
+        python_identity_before = self._capture_tree_identity(
+            self._python_root,
+            scope="python_tree",
         )
         self._python_fingerprint = self._capture_tree(
             self._python_root,
             scope="python_tree",
         )
+        self._python_identity_fingerprint = self._capture_tree_identity(
+            self._python_root,
+            scope="python_tree",
+        )
+        if self._python_identity_fingerprint != python_identity_before:
+            raise OwnerLauncherError("trusted_gcloud_python_tree_changed")
         self._production_runtime = production_runtime
         self._release_sha = release_sha
         self._otool: _PinnedExecutablePath | None = None
@@ -4316,6 +4410,7 @@ class TrustedGcloudExecutable:
         self._owner_support_source: str | None = None
         self._owner_support_site: str | None = None
         self._owner_support_fingerprint: tuple[int, int, str] | None = None
+        self._owner_support_identity_fingerprint: tuple[int, int, str] | None = None
         self._owner_support_manifest: Mapping[str, Any] | None = None
         self._owner_support_activated = False
         if self._production_runtime:
@@ -4346,12 +4441,27 @@ class TrustedGcloudExecutable:
                 self._owner_support_source,
                 self._owner_support_site,
             ) = _trusted_owner_support_paths(release_sha)
+            owner_support_identity_before = _capture_owner_support_identity_tree(
+                self._owner_support_root,
+                release_sha=release_sha,
+            )
             self._owner_support_fingerprint = (
                 _capture_owner_support_publication_tree(
                     self._owner_support_root,
                     release_sha=release_sha,
                 )
             )
+            self._owner_support_identity_fingerprint = (
+                _capture_owner_support_identity_tree(
+                    self._owner_support_root,
+                    release_sha=release_sha,
+                )
+            )
+            if (
+                self._owner_support_identity_fingerprint
+                != owner_support_identity_before
+            ):
+                raise OwnerLauncherError("trusted_owner_support_changed")
             self._owner_support_manifest = _validate_owner_support_manifest(
                 self._owner_support_root,
                 release_sha=release_sha,
@@ -4478,6 +4588,142 @@ class TrustedGcloudExecutable:
                 ):
                     raise OwnerLauncherError(invalid_code)
                 cls._feed_tree_entry(digest, ("symlink", *common, target))
+            else:
+                raise OwnerLauncherError(invalid_code)
+            entry_count += 1
+            if (
+                entry_count > _GCLOUD_MAX_SDK_ENTRIES
+                or total_bytes > _GCLOUD_MAX_SDK_BYTES
+            ):
+                raise OwnerLauncherError(oversized_code)
+        return entry_count, total_bytes, digest.hexdigest()
+
+    @classmethod
+    def _capture_tree_identity(
+        cls,
+        root: str,
+        *,
+        scope: str,
+    ) -> tuple[int, int, str]:
+        """Recheck one fully hashed tree by immutable path identities.
+
+        This is deliberately not a replacement for ``_capture_tree``.  The
+        constructor first proves every file byte with ``_capture_tree`` and
+        only then records this recursive identity baseline for fast checks in
+        the same process.  A path replacement, content write, permission or
+        owner change, hard-link change, rename, or directory membership change
+        alters at least one pinned identity field and fails closed.
+        """
+
+        invalid_code = f"trusted_gcloud_{scope}_invalid"
+        changed_code = f"trusted_gcloud_{scope}_changed"
+        oversized_code = f"trusted_gcloud_{scope}_oversized"
+        if not os.path.isabs(root):
+            raise OwnerLauncherError(invalid_code)
+        try:
+            if os.path.realpath(root, strict=True) != root:
+                raise OwnerLauncherError(invalid_code)
+        except OSError:
+            raise OwnerLauncherError(changed_code) from None
+        digest = hashlib.sha256()
+        entry_count = 0
+        total_bytes = 0
+        pending = [root]
+        while pending:
+            path = pending.pop()
+            try:
+                before = os.lstat(path)
+            except OSError:
+                raise OwnerLauncherError(changed_code) from None
+            relative = os.path.relpath(path, root)
+            if scope == "sdk" and (
+                os.path.basename(path) == "__pycache__"
+                or path.endswith((".pyc", ".pyo"))
+            ):
+                raise OwnerLauncherError("trusted_gcloud_sdk_bytecode_forbidden")
+            if before.st_uid not in {0, os.getuid()}:  # windows-footgun: ok
+                raise OwnerLauncherError(invalid_code)
+            if before.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+                raise OwnerLauncherError(invalid_code)
+            identity = (
+                relative,
+                before.st_mode,
+                before.st_uid,
+                before.st_gid,
+                before.st_dev,
+                before.st_ino,
+                before.st_nlink,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+                before.st_size,
+            )
+            if stat.S_ISDIR(before.st_mode):
+                try:
+                    with os.scandir(path) as entries:
+                        children = sorted(
+                            (entry.path for entry in entries),
+                            key=os.fsencode,
+                            reverse=True,
+                        )
+                    after = os.lstat(path)
+                except OSError:
+                    raise OwnerLauncherError(changed_code) from None
+                if (
+                    after.st_mode,
+                    after.st_uid,
+                    after.st_gid,
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_nlink,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                    after.st_size,
+                ) != identity[1:]:
+                    raise OwnerLauncherError(changed_code)
+                pending.extend(children)
+                cls._feed_tree_entry(digest, ("directory", *identity))
+            elif stat.S_ISREG(before.st_mode):
+                if before.st_size > _GCLOUD_MAX_SDK_FILE_BYTES:
+                    raise OwnerLauncherError(oversized_code)
+                try:
+                    after = os.lstat(path)
+                except OSError:
+                    raise OwnerLauncherError(changed_code) from None
+                if (
+                    after.st_mode,
+                    after.st_uid,
+                    after.st_gid,
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_nlink,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                    after.st_size,
+                ) != identity[1:]:
+                    raise OwnerLauncherError(changed_code)
+                total_bytes += before.st_size
+                cls._feed_tree_entry(digest, ("file", *identity))
+            elif stat.S_ISLNK(before.st_mode):
+                try:
+                    target = os.readlink(path)
+                    resolved = os.path.realpath(path, strict=True)
+                    inside = os.path.commonpath((root, resolved)) == root
+                    after = os.lstat(path)
+                except (OSError, ValueError):
+                    raise OwnerLauncherError(changed_code) from None
+                if not inside or (
+                    after.st_mode,
+                    after.st_uid,
+                    after.st_gid,
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_nlink,
+                    after.st_mtime_ns,
+                    after.st_ctime_ns,
+                    after.st_size,
+                ) != identity[1:]:
+                    raise OwnerLauncherError(invalid_code)
+                cls._feed_tree_entry(digest, ("symlink", *identity, target))
             else:
                 raise OwnerLauncherError(invalid_code)
             entry_count += 1
@@ -4770,11 +5016,14 @@ class TrustedGcloudExecutable:
     def trusted_command_prefix(self) -> tuple[str, ...]:
         self._wrapper.absolute_path()
         python = self._python.absolute_path()
-        if self._capture_tree(self._sdk_root, scope="sdk") != self._sdk_fingerprint:
+        if (
+            self._capture_tree_identity(self._sdk_root, scope="sdk")
+            != self._sdk_identity_fingerprint
+        ):
             raise OwnerLauncherError("trusted_gcloud_sdk_changed")
         if (
-            self._capture_tree(self._python_root, scope="python_tree")
-            != self._python_fingerprint
+            self._capture_tree_identity(self._python_root, scope="python_tree")
+            != self._python_identity_fingerprint
         ):
             raise OwnerLauncherError("trusted_gcloud_python_tree_changed")
         if self._production_runtime:
@@ -4785,9 +5034,9 @@ class TrustedGcloudExecutable:
                 raise OwnerLauncherError("trusted_python_version_changed")
             if self._capture_python_dependencies() != self._python_dependencies:
                 raise OwnerLauncherError("trusted_python_dependencies_changed")
-            publication_fingerprint = _capture_sdk_publication_tree(self._sdk_root)
-            if publication_fingerprint != self._sdk_publication_fingerprint:
-                raise OwnerLauncherError("trusted_runtime_publication_tree_changed")
+            publication_fingerprint = self._sdk_publication_fingerprint
+            if publication_fingerprint is None:
+                raise OwnerLauncherError("trusted_runtime_release_unbound")
             intent_fingerprint, intent = _validate_sdk_publication_intent(
                 self._publication_intent_path(),
                 destination=self._sdk_root,
@@ -4878,12 +5127,13 @@ class TrustedGcloudExecutable:
             or self._owner_support_source is None
             or self._owner_support_site is None
             or self._owner_support_fingerprint is None
+            or self._owner_support_identity_fingerprint is None
             or self._owner_support_manifest is None
         ):
             if self._production_runtime:
                 raise OwnerLauncherError("trusted_owner_support_unavailable")
             return
-        observed_tree = _capture_owner_support_publication_tree(
+        observed_identity = _capture_owner_support_identity_tree(
             self._owner_support_root,
             release_sha=self._release_sha,
         )
@@ -4891,7 +5141,7 @@ class TrustedGcloudExecutable:
             self._owner_support_root,
             release_sha=self._release_sha,
         )
-        if observed_tree != self._owner_support_fingerprint:
+        if observed_identity != self._owner_support_identity_fingerprint:
             raise OwnerLauncherError("trusted_owner_support_changed")
         if observed_manifest != self._owner_support_manifest:
             raise OwnerLauncherError("trusted_owner_support_manifest_changed")
@@ -4953,6 +5203,11 @@ def _owner_gcloud_environment(
         "CLOUDSDK_PYTHON_ARGS": " ".join(_GCLOUD_PYTHON_ISOLATION_ARGS),
         "PYTHONNOUSERSITE": "1",
         "PYTHONDONTWRITEBYTECODE": "1",
+        # ``gcloud compute ssh`` starts the IAP proxy as a descendant Python
+        # process.  Keep the cache prefix inherited as an environment-level
+        # invariant too: a descendant that does not preserve the parent's
+        # ``-X`` argv must still be unable to repopulate the sealed SDK tree.
+        "PYTHONPYCACHEPREFIX": _GCLOUD_PYTHON_CACHE_PREFIX,
     })
     return result
 
@@ -6839,6 +7094,157 @@ def _capture_owner_support_publication_tree(
     return entry_count, total_bytes, digest.hexdigest()
 
 
+def _capture_owner_support_identity_tree(
+    root: str,
+    *,
+    release_sha: str,
+) -> tuple[int, int, str]:
+    """Fast same-process drift proof for an already content-hashed support tree."""
+
+    expected_root, _expected_source, _expected_site = _trusted_owner_support_paths(
+        release_sha
+    )
+    if not os.path.isabs(root) or root != expected_root:
+        raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    try:
+        if os.path.realpath(root, strict=True) != root:
+            raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    except OSError:
+        raise OwnerLauncherError("trusted_owner_support_changed") from None
+    source_root = os.path.join(root, _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE)
+    site_root = os.path.join(root, _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE)
+    digest = hashlib.sha256()
+    TrustedGcloudExecutable._feed_tree_entry(
+        digest,
+        (TRUSTED_OWNER_SUPPORT_TREE_SCHEMA, release_sha, "identity"),
+    )
+    entry_count = 0
+    total_bytes = 0
+    pending = [root]
+    root_children: set[str] | None = None
+    source_children: set[str] | None = None
+    while pending:
+        path = pending.pop()
+        try:
+            before = os.lstat(path)
+            relative = os.path.relpath(path, root)
+        except (OSError, ValueError):
+            raise OwnerLauncherError("trusted_owner_support_changed") from None
+        if relative != "." and _owner_support_name_forbidden(
+            PurePosixPath(*Path(relative).parts).as_posix()
+        ):
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+        if (
+            before.st_uid != os.getuid()  # windows-footgun: ok
+            or before.st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+        _require_owner_support_no_xattrs(path)
+        identity = (
+            relative,
+            before.st_mode,
+            before.st_uid,
+            before.st_gid,
+            before.st_dev,
+            before.st_ino,
+            before.st_nlink,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+            before.st_size,
+        )
+        if stat.S_ISDIR(before.st_mode):
+            if stat.S_IMODE(before.st_mode) != 0o500:
+                raise OwnerLauncherError("trusted_owner_support_invalid")
+            try:
+                with os.scandir(path) as entries:
+                    children = sorted(
+                        (entry.path for entry in entries),
+                        key=os.fsencode,
+                        reverse=True,
+                    )
+                after = os.lstat(path)
+            except OSError:
+                raise OwnerLauncherError("trusted_owner_support_changed") from None
+            if (
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_dev,
+                after.st_ino,
+                after.st_nlink,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+                after.st_size,
+            ) != identity[1:]:
+                raise OwnerLauncherError("trusted_owner_support_changed")
+            child_names = {os.path.basename(child) for child in children}
+            if path == root:
+                root_children = child_names
+            elif path == source_root:
+                source_children = child_names
+            pending.extend(children)
+            TrustedGcloudExecutable._feed_tree_entry(
+                digest,
+                ("directory", *identity),
+            )
+        elif stat.S_ISREG(before.st_mode):
+            if (
+                stat.S_IMODE(before.st_mode) != 0o400
+                or before.st_nlink != 1
+                or before.st_size > _TRUSTED_OWNER_SUPPORT_MAX_FILE_BYTES
+            ):
+                raise OwnerLauncherError("trusted_owner_support_invalid")
+            try:
+                after = os.lstat(path)
+            except OSError:
+                raise OwnerLauncherError("trusted_owner_support_changed") from None
+            if (
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_dev,
+                after.st_ino,
+                after.st_nlink,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+                after.st_size,
+            ) != identity[1:]:
+                raise OwnerLauncherError("trusted_owner_support_changed")
+            total_bytes += before.st_size
+            TrustedGcloudExecutable._feed_tree_entry(
+                digest,
+                ("file", *identity),
+            )
+        else:
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+        entry_count += 1
+        if (
+            entry_count > _TRUSTED_OWNER_SUPPORT_MAX_ENTRIES
+            or total_bytes > _TRUSTED_OWNER_SUPPORT_MAX_BYTES
+        ):
+            raise OwnerLauncherError("trusted_owner_support_oversized")
+    if root_children != {
+        "owner-support.json",
+        _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE,
+        _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE,
+    } or source_children != set(_TRUSTED_OWNER_SUPPORT_SOURCE_MODULES):
+        raise OwnerLauncherError("trusted_owner_support_invalid")
+    required = (
+        *(
+            os.path.join(source_root, package, "__init__.py")
+            for package in _TRUSTED_OWNER_SUPPORT_SOURCE_MODULES
+        ),
+        os.path.join(site_root, "cryptography", "__init__.py"),
+        os.path.join(site_root, "yaml", "__init__.py"),
+        os.path.join(site_root, "cffi", "__init__.py"),
+        os.path.join(site_root, "pycparser", "__init__.py"),
+        os.path.join(site_root, "packaging", "__init__.py"),
+    )
+    if any(not os.path.isfile(path) for path in required):
+        raise OwnerLauncherError("trusted_owner_support_invalid")
+    return entry_count, total_bytes, digest.hexdigest()
+
+
 def _create_owner_support_source_archive(
     release_sha: str,
     destination: str,
@@ -8050,7 +8456,7 @@ def _validate_owner_interpreter_invocation(python_path: str) -> None:
         or flags.no_user_site != 1
         or flags.ignore_environment != 1
         or getattr(flags, "safe_path", False) is not True
-        or sys.pycache_prefix != "/var/empty/muncho-canary"
+        or sys.pycache_prefix != _GCLOUD_PYTHON_CACHE_PREFIX
     ):
         raise OwnerLauncherError("trusted_owner_interpreter_invalid")
 
@@ -9824,12 +10230,17 @@ class CloudSqlSchemaReconciliationExecutor(CloudSqlTemporaryAdmin):
             raise OwnerLauncherError(
                 "cloud_sql_schema_reconciliation_executor_resource_invalid"
             )
+        # Cloud SQL v1 accepts role replacement only through the
+        # ``databaseRoles`` and ``revokeExistingRoles`` query parameters.
+        # ``revokeExistingRoles`` is not a User resource field, and sending it
+        # in the JSON body makes a real recovery update fail with HTTP 400.
+        # Keep the body to actual User fields; the exact role set remains
+        # pinned by ``_update_user_query_values`` and is re-observed twice
+        # before authority is accepted.
         return {
-            "databaseRoles": list(self._DATABASE_ROLES),
             "etag": self._fixed_update_etag,
             "name": username,
             "password": password,
-            "revokeExistingRoles": True,
             "type": "BUILT_IN",
         }
 
@@ -9910,8 +10321,19 @@ class CloudSqlSchemaReconciliationExecutor(CloudSqlTemporaryAdmin):
 CloudSqlSchemaReconciliationAdmin = CloudSqlSchemaReconciliationExecutor
 
 
-class CloudSqlSchemaReconciliationControlAdmin(CloudSqlTemporaryAdmin):
-    """Broad one-time installer login; never used by normal reconciliation."""
+class CloudSqlSchemaReconciliationControlAdmin(
+    CloudSqlSchemaReconciliationExecutor
+):
+    """Exact dual-role one-time installer; never used by normal reconciliation.
+
+    Cloud SQL does not expose a real PostgreSQL superuser.  The temporary login
+    therefore receives both fixed roles through the Cloud SQL control plane
+    before its first database connection.  The role-bearing resource is fenced
+    through two stable ``users.get`` observations and the outer protocol proves
+    the whole login absent before accepting the terminal receipt.
+    """
+
+    _DATABASE_ROLES = SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES
 
     def _valid_target_username(self, username: object) -> bool:
         return (
@@ -9934,16 +10356,86 @@ class CloudSqlSchemaReconciliationControlAdmin(CloudSqlTemporaryAdmin):
         self,
         username: str,
     ) -> Mapping[str, Any]:
-        base = dict(super().temporary_admin_authority_receipt(username))
+        base = dict(
+            CloudSqlTemporaryAdmin.temporary_admin_authority_receipt(
+                self,
+                username,
+            )
+        )
         base.pop("receipt_sha256", None)
+        resource = self._role_bound_resource(
+            username,
+            require_exact_roles=True,
+        )
+        if resource is None:
+            raise OwnerLauncherError(
+                "cloud_sql_schema_reconciliation_control_authority_unconfirmed"
+            )
+        self.require_current_authority(username)
         unsigned = {
             **base,
             "schema": (
                 SCHEMA_RECONCILIATION_CONTROL_ADMIN_AUTHORITY_RECEIPT_SCHEMA
             ),
             "broad_bootstrap_authority": True,
-            "database_roles_requested": [],
+            "database_roles_requested": list(self._DATABASE_ROLES),
             "normal_reconciliation_executor": False,
+            "resource_etag_sha256": _sha256(
+                str(resource["etag"]).encode("ascii")
+            ),
+        }
+        return {
+            **unsigned,
+            "receipt_sha256": _sha256(_canonical_bytes(unsigned)),
+        }
+
+
+class CloudSqlSchemaUpgradeAdmin(CloudSqlSchemaReconciliationControlAdmin):
+    """Exact temporary dual-role authority for one stopped schema upgrade."""
+
+    _DATABASE_ROLES = SCHEMA_UPGRADE_DATABASE_ROLES
+
+    def _valid_target_username(self, username: object) -> bool:
+        return (
+            isinstance(username, str)
+            and _ADMIN_USERNAME.fullmatch(username) is not None
+        )
+
+    def _absence_evidence_identity(self) -> Mapping[str, Any]:
+        return {
+            "schema": SCHEMA_UPGRADE_ADMIN_ABSENCE_RECEIPT_SCHEMA,
+            "temporary_schema_upgrade_admin_absent": True,
+        }
+
+    def temporary_schema_upgrade_admin_authority_receipt(
+        self,
+        username: str,
+    ) -> Mapping[str, Any]:
+        base = dict(
+            CloudSqlTemporaryAdmin.temporary_admin_authority_receipt(
+                self,
+                username,
+            )
+        )
+        base.pop("receipt_sha256", None)
+        resource = self._role_bound_resource(
+            username,
+            require_exact_roles=True,
+        )
+        if resource is None:
+            raise OwnerLauncherError(
+                "cloud_sql_schema_upgrade_authority_unconfirmed"
+            )
+        self.require_current_authority(username)
+        unsigned = {
+            **base,
+            "schema": SCHEMA_UPGRADE_ADMIN_AUTHORITY_RECEIPT_SCHEMA,
+            "broad_schema_upgrade_authority": True,
+            "database_roles_requested": list(self._DATABASE_ROLES),
+            "normal_reconciliation_executor": False,
+            "resource_etag_sha256": _sha256(
+                str(resource["etag"]).encode("ascii")
+            ),
         }
         return {
             **unsigned,
@@ -12807,6 +13299,78 @@ class _IapRemoteSession:
         self._validate_schema_reconciliation_control_frame(frame, sequence=1)
         return self._write_frame(frame, close_stdin=True)
 
+    @staticmethod
+    def _validate_schema_upgrade_frame(
+        frame: bytes | bytearray | memoryview,
+        *,
+        sequence: int,
+    ) -> None:
+        if type(sequence) is not int or sequence not in {0, 1}:
+            raise OwnerLauncherError("schema_upgrade_remote_frame_invalid")
+        try:
+            view = memoryview(frame).cast("B")
+        except (TypeError, ValueError):
+            raise OwnerLauncherError(
+                "schema_upgrade_remote_frame_invalid"
+            ) from None
+        try:
+            if view.nbytes < 10:
+                raise OwnerLauncherError("schema_upgrade_remote_frame_invalid")
+            magic = bytes(view[:4])
+            payload_size = struct.unpack(">I", view[4:8])[0]
+            expected_magic = (
+                SCHEMA_UPGRADE_APPLY_MAGIC,
+                SCHEMA_UPGRADE_CLEANUP_MAGIC,
+            )[sequence]
+            credential_size = SCHEMA_UPGRADE_CREDENTIAL_BYTES if sequence == 0 else 0
+            if (
+                magic != expected_magic
+                or not 2 <= payload_size <= PHASE_B_MAX_RESPONSE_BYTES
+                or view.nbytes != 8 + payload_size + credential_size
+            ):
+                raise OwnerLauncherError("schema_upgrade_remote_frame_invalid")
+        finally:
+            view.release()
+
+    def schema_upgrade_exchange_before(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        write_guard: Callable[[], None],
+        on_first_write: Callable[[], None],
+        on_write_complete: Callable[[], None],
+    ) -> Mapping[str, Any]:
+        if (
+            self._stdin_closed
+            or self._frames_written != 0
+            or self._messages_read != 1
+            or not callable(write_guard)
+            or not callable(on_first_write)
+            or not callable(on_write_complete)
+        ):
+            raise OwnerLauncherError("schema_upgrade_remote_frame_state_invalid")
+        self._validate_schema_upgrade_frame(frame, sequence=0)
+        return self._write_frame(
+            frame,
+            close_stdin=False,
+            write_guard=write_guard,
+            on_first_write=on_first_write,
+            on_write_complete=on_write_complete,
+        )
+
+    def schema_upgrade_finish(
+        self,
+        frame: bytes | bytearray | memoryview,
+    ) -> Mapping[str, Any]:
+        if (
+            self._stdin_closed
+            or self._frames_written != 1
+            or self._messages_read != 2
+        ):
+            raise OwnerLauncherError("schema_upgrade_remote_frame_state_invalid")
+        self._validate_schema_upgrade_frame(frame, sequence=1)
+        return self._write_frame(frame, close_stdin=True)
+
     def finish(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]:
         if (
             self._frames_written == 0
@@ -13568,6 +14132,22 @@ class IapSchemaReconciliationControlBootstrapTransport(
             # The initial gate is secret-free and binds the owner subject.
             # Owner-approved authority is rechecked immediately before the
             # first credential byte is written.
+            approved=False,
+            post_frame_timeout_seconds=2_400.0,
+            maximum_line_bytes=PHASE_B_MAX_RESPONSE_BYTES,
+        )
+
+
+class IapCanonicalWriterSchemaUpgradeTransport(IapCoordinatorTransport):
+    """Pinned transport for the exact stopped schema-generation upgrade."""
+
+    _MODULE = "gateway.canonical_writer_schema_upgrade_runtime"
+    _COMMANDS = frozenset({"upgrade"})
+
+    def open_upgrade(self, release_sha: str) -> _IapRemoteSession:
+        return self._open(
+            release_sha,
+            "upgrade",
             approved=False,
             post_frame_timeout_seconds=2_400.0,
             maximum_line_bytes=PHASE_B_MAX_RESPONSE_BYTES,
@@ -14540,6 +15120,472 @@ def bootstrap_schema_reconciliation_control(
         raise OwnerLauncherError(
             "schema_reconciliation_control_terminal_incomplete"
         )
+    return terminal
+
+
+def recover_historical_schema_reconciliation_control(
+    *,
+    release_sha: str,
+    source_release_sha: str,
+    transport: IapSchemaReconciliationControlBootstrapTransport,
+    cloud_sql_client: GoogleRestClient,
+    owner_identity: GcloudOwnerAccessToken,
+    now: Callable[[], int] = lambda: int(time.time()),
+    provenance_guard: Callable[
+        [str], None
+    ] = require_owner_runtime_and_launcher_provenance,
+) -> Mapping[str, Any]:
+    """Finish one predecessor's exact control bootstrap through a successor.
+
+    The predecessor remains the remote protocol authority, so its deterministic
+    temporary login and stopped-release gate are reproduced exactly.  Only the
+    local trusted runtime and launcher provenance move forward to the successor.
+    This is deliberately narrower than accepting a caller-selected login name.
+    """
+
+    if (
+        not isinstance(release_sha, str)
+        or _RELEASE_SHA.fullmatch(release_sha) is None
+        or not isinstance(source_release_sha, str)
+        or _RELEASE_SHA.fullmatch(source_release_sha) is None
+        or source_release_sha == release_sha
+    ):
+        raise OwnerLauncherError(
+            "schema_reconciliation_control_successor_recovery_invalid"
+        )
+
+    def successor_bound_guard(observed_source_release: str) -> None:
+        if observed_source_release != source_release_sha:
+            raise OwnerLauncherError(
+                "schema_reconciliation_control_successor_recovery_invalid"
+            )
+        provenance_guard(release_sha)
+
+    terminal = bootstrap_schema_reconciliation_control(
+        release_sha=source_release_sha,
+        transport=transport,
+        cloud_sql_client=cloud_sql_client,
+        owner_identity=owner_identity,
+        provenance_guard=successor_bound_guard,
+    )
+    from gateway import (
+        canonical_writer_schema_reconciliation_control_bootstrap as bootstrap,
+    )
+
+    recovered_at = now()
+    if not isinstance(terminal, Mapping):
+        raise OwnerLauncherError(
+            "schema_reconciliation_control_successor_recovery_invalid"
+        )
+    completed_at = terminal.get("completed_at_unix")
+    if (
+        terminal.get("schema") != bootstrap.TERMINAL_SCHEMA
+        or terminal.get("ok") is not True
+        or terminal.get("state") != "control_installed_admin_absent_stopped"
+        or terminal.get("release_revision") != source_release_sha
+        or terminal.get("temporary_control_admin_absent") is not True
+        or not isinstance(terminal.get("terminal_sha256"), str)
+        or _SHA256.fullmatch(str(terminal["terminal_sha256"])) is None
+        or type(recovered_at) is not int
+        or type(completed_at) is not int
+        or recovered_at < completed_at
+    ):
+        raise OwnerLauncherError(
+            "schema_reconciliation_control_successor_recovery_invalid"
+        )
+    provenance_guard(release_sha)
+    unsigned = {
+        "schema": SCHEMA_RECONCILIATION_CONTROL_SUCCESSOR_RECOVERY_SCHEMA,
+        "ok": True,
+        "state": "historical_control_recovered_admin_absent_stopped",
+        "release_sha": release_sha,
+        "source_release_sha": source_release_sha,
+        "source_terminal": dict(terminal),
+        "source_terminal_sha256": terminal["terminal_sha256"],
+        "temporary_control_admin_absent": True,
+        "services_stopped": True,
+        "recovered_at_unix": recovered_at,
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": _sha256(_canonical_bytes(unsigned)),
+    }
+
+
+def upgrade_canonical_writer_schema(
+    *,
+    release_sha: str,
+    transport: IapCanonicalWriterSchemaUpgradeTransport,
+    cloud_sql_client: GoogleRestClient,
+    owner_identity: GcloudOwnerAccessToken,
+    now: Callable[[], int] = lambda: int(time.time()),
+    password_factory: Callable[[], bytearray] = _new_admin_password,
+    nonce_factory: Callable[[int], bytes] = secrets.token_bytes,
+    signer: _PhaseBOwnerExternalSigner | None = None,
+    boundary_factory: Callable[
+        [GoogleRestClient], CloudSqlTemporaryAdmin
+    ] = CloudSqlSchemaUpgradeAdmin,
+    secret_hardener: Callable[[], None] = harden_owner_secret_process,
+    provenance_guard: Callable[
+        [str], None
+    ] = require_owner_runtime_and_launcher_provenance,
+) -> Mapping[str, Any]:
+    """Upgrade the exact reviewed schema generation while services stay stopped."""
+
+    if not isinstance(release_sha, str) or _RELEASE_SHA.fullmatch(release_sha) is None:
+        raise OwnerLauncherError("invalid_release_sha")
+
+    signal_fence = _OwnerSignalFence()
+    signal_fence.install()
+    session: _IapRemoteSession | None = None
+    boundary: CloudSqlTemporaryAdmin | None = None
+    credential: bytearray | None = None
+    apply_frame: bytearray | None = None
+    cleanup_frame: bytearray | None = None
+    expected_username: str | None = None
+    cleanup_receipt: Mapping[str, Any] | None = None
+    terminal: Mapping[str, Any] | None = None
+    primary: BaseException | None = None
+    mutation_request_started = False
+    mutation_may_exist = False
+    database_capability_terminated = False
+    cleanup_complete = False
+    try:
+        provenance_guard(release_sha)
+        from gateway import canonical_writer_schema_upgrade_runtime as upgrade
+
+        if (
+            upgrade.APPLY_OWNER_SSHSIG_NAMESPACE
+            != SCHEMA_UPGRADE_APPLY_SSHSIG_NAMESPACE
+            or upgrade.CLEANUP_OWNER_SSHSIG_NAMESPACE
+            != SCHEMA_UPGRADE_CLEANUP_SSHSIG_NAMESPACE
+            or upgrade.APPLY_MAGIC != SCHEMA_UPGRADE_APPLY_MAGIC
+            or upgrade.CLEANUP_MAGIC != SCHEMA_UPGRADE_CLEANUP_MAGIC
+            or upgrade.OPAQUE_CREDENTIAL_BYTES != SCHEMA_UPGRADE_CREDENTIAL_BYTES
+        ):
+            raise OwnerLauncherError("schema_upgrade_protocol_invalid")
+
+        secret_hardener()
+        account = owner_identity.account_for_read_only_preflight()
+        expected_owner_subject = _sha256(account.encode("utf-8"))
+        owner_signer = signer or _PhaseBOwnerExternalSigner()
+        owner_authority = owner_signer.inspect()
+        if (
+            owner_authority.public_fingerprint
+            != PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT
+            or _sha256(owner_authority.public_fingerprint.encode("ascii"))
+            != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        ):
+            raise OwnerLauncherError("schema_upgrade_owner_authority_invalid")
+
+        session = transport.open_upgrade(release_sha)
+        gate_raw = session.read_gate()
+        current = now()
+        try:
+            gate = upgrade.validate_gate_for_owner(
+                gate_raw,
+                expected_release_revision=release_sha,
+                expected_owner_subject_sha256=expected_owner_subject,
+                owner_public_key_ed25519_hex=(
+                    owner_authority.public_key_ed25519_hex
+                ),
+                owner_public_fingerprint=owner_authority.public_fingerprint,
+                now_unix=current,
+            )
+        except BaseException:
+            raise OwnerLauncherError("schema_upgrade_gate_invalid") from None
+        expected_username = ADMIN_USERNAME_PREFIX + gate["plan_sha256"][:16]
+        if (
+            gate.get("release_revision") != release_sha
+            or gate.get("owner_subject_sha256") != expected_owner_subject
+            or gate.get("owner_public_key_ed25519_hex")
+            != owner_authority.public_key_ed25519_hex
+            or gate.get("owner_key_id") != owner_authority.key_id
+            or gate.get("owner_public_fingerprint")
+            != owner_authority.public_fingerprint
+            or gate.get("temporary_schema_upgrade_admin_username")
+            != expected_username
+            or gate.get("temporary_schema_upgrade_admin_username_sha256")
+            != _sha256(expected_username.encode("ascii"))
+            or gate.get("database_roles_requested")
+            != list(SCHEMA_UPGRADE_DATABASE_ROLES)
+            or current + SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS
+            >= gate.get("expires_at_unix", 0)
+        ):
+            raise OwnerLauncherError("schema_upgrade_gate_binding_invalid")
+        owner_identity.bind_approved_subject(expected_owner_subject)
+        owner_identity.require_stable()
+        session.require_current_authority()
+        provenance_guard(release_sha)
+
+        boundary = boundary_factory(cloud_sql_client)
+        boundary.begin_mutation_observation(
+            expected_owner_subject_sha256=expected_owner_subject,
+            expected_mutation_context_sha256=gate["gate_sha256"],
+        )
+        credential = password_factory()
+        if (
+            not isinstance(credential, bytearray)
+            or len(credential) != SCHEMA_UPGRADE_CREDENTIAL_BYTES
+        ):
+            _wipe(credential if isinstance(credential, bytearray) else None)
+            credential = None
+            raise OwnerLauncherError("schema_upgrade_credential_invalid")
+        try:
+            credential_text = credential.decode("ascii", errors="strict")
+        except UnicodeError:
+            raise OwnerLauncherError("schema_upgrade_credential_invalid") from None
+        if re.fullmatch(r"[A-Za-z0-9_-]{64}", credential_text) is None:
+            credential_text = ""
+            raise OwnerLauncherError("schema_upgrade_credential_invalid")
+        mutation_request_started = True
+        try:
+            boundary.create_or_rotate_recovery(expected_username, credential_text)
+        finally:
+            credential_text = ""
+        mutation_may_exist = True
+        authority_receipt = getattr(
+            boundary,
+            "temporary_schema_upgrade_admin_authority_receipt",
+            None,
+        )
+        if not callable(authority_receipt):
+            raise OwnerLauncherError("schema_upgrade_boundary_invalid")
+        cloud_authority = authority_receipt(expected_username)
+        issued_at, expires_at = _schema_reconciliation_time_window(
+            gate,
+            now_unix=now(),
+        )
+        apply_claim = upgrade.build_owner_apply_unsigned(
+            gate=gate,
+            cloud_sql_authority_receipt=cloud_authority,
+            issued_at_unix=issued_at,
+            expires_at_unix=expires_at,
+            nonce_sha256=_schema_reconciliation_nonce_sha256(nonce_factory),
+        )
+        apply_signature = owner_signer.sign(
+            upgrade.owner_apply_signature_payload(apply_claim),
+            namespace=SCHEMA_UPGRADE_APPLY_SSHSIG_NAMESPACE,
+            expected_authority=owner_authority,
+        )
+        apply_claim = {**apply_claim, "signature_sshsig": apply_signature}
+        apply_frame = _schema_upgrade_frame(
+            SCHEMA_UPGRADE_APPLY_MAGIC,
+            apply_claim,
+            credential=credential,
+        )
+
+        def guard_apply_first_byte() -> None:
+            provenance_guard(release_sha)
+            owner_identity.require_stable()
+            session.require_current_authority()
+            if owner_signer.inspect() != owner_authority:
+                raise OwnerLauncherError("schema_upgrade_owner_authority_changed")
+            if (
+                now() + _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS
+                >= apply_claim["expires_at_unix"]
+            ):
+                raise OwnerLauncherError("schema_upgrade_apply_claim_expired")
+            boundary.require_current_authority(expected_username)
+
+        def wipe_apply_material_after_write() -> None:
+            nonlocal credential, apply_frame
+            _wipe(credential)
+            _wipe(apply_frame)
+            credential = None
+            apply_frame = None
+
+        intermediate_raw = session.schema_upgrade_exchange_before(
+            apply_frame,
+            write_guard=guard_apply_first_byte,
+            on_first_write=lambda: None,
+            on_write_complete=wipe_apply_material_after_write,
+        )
+        _wipe(credential)
+        _wipe(apply_frame)
+        credential = None
+        apply_frame = None
+        if intermediate_raw.get("schema") == upgrade.FAILURE_SCHEMA:
+            failure = upgrade.validate_failure_for_owner(
+                intermediate_raw,
+                gate=gate,
+                expected_wire_stage="apply_to_intermediate",
+                expected_transcript_head_sha256=apply_claim[
+                    "apply_claim_sha256"
+                ],
+            )
+            session.mark_validated(failure)
+            raise RemoteCommandFailed(failure)
+        try:
+            intermediate = upgrade.validate_intermediate_for_owner(
+                intermediate_raw,
+                gate=gate,
+                apply_claim=apply_claim,
+                now_unix=now(),
+            )
+        except BaseException:
+            raise OwnerLauncherError("schema_upgrade_intermediate_invalid") from None
+        if intermediate.get("database_capability_terminated") is not True:
+            raise OwnerLauncherError("schema_upgrade_intermediate_invalid")
+        database_capability_terminated = True
+
+        cleanup_receipt = _cleanup_cloud_sql_temporary_login(
+            boundary,
+            username=expected_username,
+        )
+        cleanup_complete = True
+        issued_at, expires_at = _schema_reconciliation_time_window(
+            gate,
+            now_unix=now(),
+        )
+        cleanup_claim = upgrade.build_owner_cleanup_unsigned(
+            gate=gate,
+            apply_claim=apply_claim,
+            intermediate=intermediate,
+            cloud_sql_absence_receipt=cleanup_receipt,
+            issued_at_unix=issued_at,
+            expires_at_unix=expires_at,
+            nonce_sha256=_schema_reconciliation_nonce_sha256(nonce_factory),
+        )
+        cleanup_signature = owner_signer.sign(
+            upgrade.owner_cleanup_signature_payload(cleanup_claim),
+            namespace=SCHEMA_UPGRADE_CLEANUP_SSHSIG_NAMESPACE,
+            expected_authority=owner_authority,
+        )
+        cleanup_claim = {**cleanup_claim, "signature_sshsig": cleanup_signature}
+        cleanup_frame = _schema_upgrade_frame(
+            SCHEMA_UPGRADE_CLEANUP_MAGIC,
+            cleanup_claim,
+        )
+        terminal_raw = session.schema_upgrade_finish(cleanup_frame)
+        _wipe(cleanup_frame)
+        cleanup_frame = None
+        if terminal_raw.get("schema") == upgrade.FAILURE_SCHEMA:
+            failure = upgrade.validate_failure_for_owner(
+                terminal_raw,
+                gate=gate,
+                expected_wire_stage="cleanup_to_terminal",
+                expected_transcript_head_sha256=cleanup_claim[
+                    "cleanup_claim_sha256"
+                ],
+            )
+            session.mark_validated(failure)
+            raise RemoteCommandFailed(failure)
+        try:
+            terminal = upgrade.validate_terminal_for_owner(
+                terminal_raw,
+                gate=gate,
+                apply_claim=apply_claim,
+                intermediate=intermediate,
+                cleanup_claim=cleanup_claim,
+                now_unix=now(),
+            )
+        except BaseException:
+            raise OwnerLauncherError("schema_upgrade_terminal_invalid") from None
+        session.mark_validated(terminal)
+        session.close()
+        session = None
+        owner_identity.require_stable()
+        provenance_guard(release_sha)
+    except BaseException as exc:
+        primary = exc
+    finally:
+        signal_fence.begin_cleanup()
+        _wipe(credential)
+        _wipe(apply_frame)
+        _wipe(cleanup_frame)
+        credential = None
+        apply_frame = None
+        cleanup_frame = None
+        reconciliation_required = False
+        if (
+            boundary is not None
+            and expected_username is not None
+            and not cleanup_complete
+            and not mutation_request_started
+            and not mutation_may_exist
+        ):
+            try:
+                reconciliation_required = (
+                    boundary.mutation_reconciliation_required()
+                )
+            except BaseException as state_error:
+                code = (
+                    state_error.code
+                    if isinstance(state_error, OwnerLauncherError)
+                    else "schema_upgrade_cleanup_state_failed"
+                )
+                blocked = CleanupBlocked(code)
+                if primary is None:
+                    primary = blocked
+                else:
+                    _attach_cleanup_failure(primary, blocked)
+        needs_cleanup = bool(
+            boundary is not None
+            and expected_username is not None
+            and not cleanup_complete
+            and (
+                mutation_request_started
+                or mutation_may_exist
+                or reconciliation_required
+            )
+        )
+        if (
+            needs_cleanup
+            and session is not None
+            and not database_capability_terminated
+        ):
+            try:
+                session.abort_and_prove_terminated()
+                database_capability_terminated = True
+                session = None
+            except BaseException as termination_error:
+                code = (
+                    termination_error.code
+                    if isinstance(termination_error, OwnerLauncherError)
+                    else "remote_termination_unconfirmed"
+                )
+                blocked = CleanupBlocked(code)
+                if primary is not None:
+                    _attach_cleanup_failure(blocked, primary)
+                primary = blocked
+        if (
+            needs_cleanup
+            and boundary is not None
+            and expected_username is not None
+            and database_capability_terminated
+        ):
+            try:
+                cleanup_receipt = _cleanup_cloud_sql_temporary_login(
+                    boundary,
+                    username=expected_username,
+                )
+                cleanup_complete = True
+            except BaseException as cleanup_error:
+                if not isinstance(cleanup_error, CleanupBlocked):
+                    code = (
+                        cleanup_error.code
+                        if isinstance(cleanup_error, OwnerLauncherError)
+                        else "schema_upgrade_cleanup_failed"
+                    )
+                    cleanup_error = CleanupBlocked(code)
+                if primary is not None:
+                    _attach_cleanup_failure(cleanup_error, primary)
+                primary = cleanup_error
+        if session is not None:
+            _close_session_preserving_primary(session, primary)
+        try:
+            signal_fence.restore()
+        except BaseException as cleanup_error:
+            if primary is None:
+                primary = cleanup_error
+            else:
+                _attach_cleanup_failure(primary, cleanup_error)
+
+    if primary is not None:
+        raise primary
+    if terminal is None or cleanup_receipt is None or not cleanup_complete:
+        raise OwnerLauncherError("schema_upgrade_terminal_incomplete")
     return terminal
 
 
@@ -16108,6 +17154,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         remote_argv: Sequence[str],
         *,
         account: str,
+        failure_code: str = "stopped_release_remote_failed",
         allowed_returncodes: frozenset[int] = frozenset({0}),
         timeout_seconds: float = 300.0,
         maximum_output_bytes: int = _HTTP_RESPONSE_MAX_BYTES,
@@ -16122,6 +17169,9 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
             or not 0 < maximum_output_bytes <= (
                 _STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES
             )
+            or not isinstance(failure_code, str)
+            or re.fullmatch(r"stopped_release_[a-z0-9_]{3,47}", failure_code)
+            is None
         ):
             raise OwnerLauncherError("stopped_release_remote_contract_invalid")
         authorization_before = self._authorization_snapshot(account)
@@ -16157,7 +17207,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
             or not isinstance(completed.stdout, bytes)
             or len(completed.stdout) > maximum_output_bytes
         ):
-            raise OwnerLauncherError("stopped_release_remote_failed")
+            raise OwnerLauncherError(failure_code)
         return completed
 
     def _run_remote_input(
@@ -16165,7 +17215,8 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         remote_argv: Sequence[str],
         *,
         account: str,
-        input_bytes: bytes,
+        input_bytes: bytes | None = None,
+        input_factory: Callable[[], bytes] | None = None,
         timeout_seconds: float = 300.0,
         maximum_input_bytes: int = _WRITER_AUTHORITY_MAX_FRAME_BYTES + 8,
         maximum_output_bytes: int = _HTTP_RESPONSE_MAX_BYTES,
@@ -16173,16 +17224,21 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         """Run one exact remote command with bounded, secret-free framed stdin."""
 
         if (
-            not isinstance(input_bytes, bytes)
-            or not input_bytes
+            (input_bytes is None) == (input_factory is None)
+            or (input_factory is not None and not callable(input_factory))
             or not 0 < maximum_input_bytes <= (
                 _STOPPED_RELEASE_REMOTE_INPUT_MAX_BYTES
             )
-            or len(input_bytes) > maximum_input_bytes
             or not 0 < timeout_seconds <= 2_400
             or not 0 < maximum_output_bytes <= (
                 _STOPPED_RELEASE_REMOTE_OUTPUT_MAX_BYTES
             )
+        ):
+            raise OwnerLauncherError("stopped_release_remote_input_invalid")
+        if input_bytes is not None and (
+            not isinstance(input_bytes, bytes)
+            or not input_bytes
+            or len(input_bytes) > maximum_input_bytes
         ):
             raise OwnerLauncherError("stopped_release_remote_input_invalid")
         authorization_before = self._authorization_snapshot(account)
@@ -16190,6 +17246,34 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         self._validate_dry_run(argv)
         if self._authorization_snapshot(account) != authorization_before:
             raise OwnerLauncherError("iap_ssh_authorization_changed")
+        if input_factory is not None:
+            try:
+                input_bytes = input_factory()
+            except OwnerLauncherError:
+                self._postflight()
+                raise
+            except BaseException:
+                self._postflight()
+                raise OwnerLauncherError(
+                    "stopped_release_remote_input_invalid"
+                ) from None
+            if (
+                not isinstance(input_bytes, bytes)
+                or not input_bytes
+                or len(input_bytes) > maximum_input_bytes
+            ):
+                self._postflight()
+                raise OwnerLauncherError(
+                    "stopped_release_remote_input_invalid"
+                )
+            # The exact frame clock starts only after both external
+            # authorization snapshots.  Re-pin the already-selected human
+            # identity immediately before transfer without another slow
+            # inventory pass that would age the frame before the guest sees it.
+            self._owner_identity.require_stable()
+            self._postflight()
+        if input_bytes is None:  # Defensive narrowing after the exact XOR gate.
+            raise OwnerLauncherError("stopped_release_remote_input_invalid")
         command_prefix = self._gcloud_executable.trusted_command_prefix()
         try:
             completed = self._preflight_runner(
@@ -16237,6 +17321,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 "%f",
             ),
             account=account,
+            failure_code="stopped_release_source_probe_failed",
             maximum_output_bytes=40,
         )
         if completed.stdout == b"":
@@ -16265,11 +17350,12 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                         source_root,
                     ),
                     account=account,
+                    failure_code="stopped_release_source_clone_failed",
                     timeout_seconds=900.0,
                 )
             except OwnerLauncherError as exc:
                 if (
-                    exc.code != "stopped_release_remote_failed"
+                    exc.code != "stopped_release_source_clone_failed"
                     or not self._revision_source_exists(
                         release_sha,
                         account=account,
@@ -16288,6 +17374,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 "origin",
             ),
             account=account,
+            failure_code="stopped_release_repository_probe_failed",
             maximum_output_bytes=512,
         )
         inside_work_tree = self._run_remote(
@@ -16300,6 +17387,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 "--is-inside-work-tree",
             ),
             account=account,
+            failure_code="stopped_release_worktree_probe_failed",
             maximum_output_bytes=16,
         )
         if (
@@ -16320,6 +17408,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 release_sha,
             ),
             account=account,
+            failure_code="stopped_release_source_checkout_failed",
         )
         head = self._run_remote(
             (
@@ -16332,6 +17421,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 "HEAD",
             ),
             account=account,
+            failure_code="stopped_release_head_probe_failed",
             maximum_output_bytes=64,
         )
         detached = self._run_remote(
@@ -16345,6 +17435,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 "HEAD",
             ),
             account=account,
+            failure_code="stopped_release_detached_probe_failed",
             allowed_returncodes=frozenset({1}),
             maximum_output_bytes=512,
         )
@@ -16359,6 +17450,7 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
                 "--untracked-files=all",
             ),
             account=account,
+            failure_code="stopped_release_status_probe_failed",
             maximum_output_bytes=8_192,
         )
         if (
@@ -16405,6 +17497,11 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
         completed = self._run_remote(
             remote,
             account=account,
+            failure_code=(
+                "stopped_release_apply_remote_failed"
+                if command == "apply"
+                else "stopped_release_plan_remote_failed"
+            ),
             timeout_seconds=2_400.0 if command == "apply" else 300.0,
         )
         if (
@@ -16444,6 +17541,122 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
             ),
             plan=plan,
         )
+
+
+class IapStoppedWriterResidueRecoveryTransport(IapStoppedReleaseTransport):
+    """Quarantine one exact receipt-bound stopped writer staging pair."""
+
+    _MODULE = STOPPED_WRITER_RESIDUE_RECOVERY_MODULE
+
+    def _run_recovery_command(
+        self,
+        release_sha: str,
+        command: str,
+        *,
+        account: str,
+        approved_plan_sha256: str | None = None,
+    ) -> Mapping[str, Any]:
+        if command not in {"plan", "apply"}:
+            raise OwnerLauncherError("stopped_writer_residue_command_invalid")
+        if command == "apply":
+            approved = _require_sha256(
+                approved_plan_sha256,
+                "stopped_writer_residue_plan_invalid",
+            )
+        elif approved_plan_sha256 is not None:
+            raise OwnerLauncherError("stopped_writer_residue_plan_invalid")
+        else:
+            approved = None
+        source_root = self._source_root(release_sha)
+        remote = (
+            *self._fixed_remote_environment(chdir=source_root),
+            self._REMOTE_PYTHON,
+            "-B",
+            "-E",
+            "-s",
+            "-m",
+            self._MODULE,
+            command,
+            "--revision",
+            release_sha,
+            *(
+                ()
+                if approved is None
+                else ("--approved-plan-sha256", approved)
+            ),
+        )
+        completed = self._run_remote(
+            remote,
+            account=account,
+            failure_code="stopped_release_residue_remote_failed",
+            allowed_returncodes=frozenset({0, 2}),
+            timeout_seconds=300.0,
+        )
+        if (
+            not completed.stdout
+            or not completed.stdout.endswith(b"\n")
+            or b"\n" in completed.stdout[:-1]
+        ):
+            raise OwnerLauncherError("stopped_writer_residue_output_invalid")
+        try:
+            value = _decode_json_object(
+                completed.stdout,
+                maximum=_HTTP_RESPONSE_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError(
+                "stopped_writer_residue_output_invalid"
+            ) from None
+        if completed.returncode == 2:
+            from scripts.canary import stopped_writer_residue_recovery as recovery
+
+            if (
+                set(value) != {"schema", "ok", "error_code", "error_type"}
+                or value.get("schema") != recovery.FAILURE_SCHEMA
+                or value.get("ok") is not False
+                or value.get("error_code")
+                != "stopped_writer_residue_recovery_failed"
+                or not isinstance(value.get("error_type"), str)
+                or re.fullmatch(r"[A-Za-z][A-Za-z0-9_]{0,63}", value["error_type"])
+                is None
+            ):
+                raise OwnerLauncherError(
+                    "stopped_writer_residue_output_invalid"
+                )
+            raise OwnerLauncherError(
+                f"stopped_writer_residue_{command}_remote_failed"
+            )
+        return value
+
+    def recover(self, release_sha: str) -> Mapping[str, Any]:
+        if _RELEASE_SHA.fullmatch(release_sha) is None:
+            raise OwnerLauncherError("invalid_release_sha")
+        from scripts.canary import stopped_writer_residue_recovery as recovery
+
+        account = self._owner_identity.account_for_read_only_preflight()
+        self._prepare_source(release_sha, account=account)
+        try:
+            plan = recovery.validate_plan_mapping(
+                self._run_recovery_command(
+                    release_sha,
+                    "plan",
+                    account=account,
+                ),
+                expected_target_revision=release_sha,
+            )
+            return recovery.validate_receipt_mapping(
+                self._run_recovery_command(
+                    release_sha,
+                    "apply",
+                    account=account,
+                    approved_plan_sha256=str(plan["plan_sha256"]),
+                ),
+                plan=plan,
+            )
+        except (TypeError, ValueError) as exc:
+            raise OwnerLauncherError(
+                "stopped_writer_residue_output_invalid"
+            ) from exc
 
 
 class IapHostReceiptRotationTransport(IapStoppedReleaseTransport):
@@ -17325,11 +18538,23 @@ def collect_fresh_writer_external_iam(
             evaluate as evaluate_host,
         )
 
-        runner = owner_identity.run_canary_iam_read_only_json
+        live_runner = owner_identity.run_canary_iam_read_only_json
+        inventory: dict[tuple[str, ...], Any] = {}
+
+        def shared_inventory_runner(argv: Sequence[str]) -> Any:
+            """Reuse one immutable observation for overlapping exact argv."""
+
+            logical = tuple(argv)
+            if logical not in inventory:
+                inventory[logical] = copy.deepcopy(live_runner(logical))
+            return copy.deepcopy(inventory[logical])
+
         foundation_report = evaluate_foundation(
-            collect_foundation(run_json=runner)
+            collect_foundation(run_json=shared_inventory_runner)
         )
-        host_report = evaluate_host(collect_host(run_json=runner))
+        host_report = evaluate_host(
+            collect_host(run_json=shared_inventory_runner)
+        )
         current = int(time.time()) if now_unix is None else now_unix
         receipt = build_external_iam_receipt(
             foundation_report,
@@ -17593,6 +18818,7 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
         arguments: Sequence[str],
         account: str,
         stdin_frame: bytes | None = None,
+        stdin_frame_factory: Callable[[], bytes] | None = None,
         timeout_seconds: float = 900.0,
         allowed_returncodes: frozenset[int] = frozenset({0}),
     ) -> Mapping[str, Any]:
@@ -17606,6 +18832,11 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
                 or _CONTROL_RE.search(item) is not None
                 for item in arguments
             )
+            or (stdin_frame is not None and stdin_frame_factory is not None)
+            or (
+                stdin_frame_factory is not None
+                and not callable(stdin_frame_factory)
+            )
         ):
             raise OwnerLauncherError("writer_activation_command_invalid")
         interpreter = f"/opt/muncho-canary-releases/{release_sha}/venv/bin/python"
@@ -17618,7 +18849,7 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
             module,
             *arguments,
         )
-        if stdin_frame is None:
+        if stdin_frame is None and stdin_frame_factory is None:
             completed = self._run_remote(
                 remote,
                 account=account,
@@ -17632,6 +18863,7 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
                 remote,
                 account=account,
                 input_bytes=stdin_frame,
+                input_factory=stdin_frame_factory,
                 timeout_seconds=timeout_seconds,
             )
         if (
@@ -17698,7 +18930,7 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
                 "installed_path",
             }
             digest_key = "native_observation_plan_sha256"
-            schema = "muncho-writer-native-observation-plan.v2"
+            schema = "muncho-writer-native-observation-plan.v3"
             path = WRITER_NATIVE_PLAN_PATH
         if (
             not isinstance(value, Mapping)
@@ -17937,7 +19169,7 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
             not isinstance(value, Mapping)
             or set(value) != expected_keys
             or value.get("ok") is not True
-            or value.get("schema") != "muncho-writer-native-observation.v1"
+            or value.get("schema") != "muncho-writer-native-observation.v2"
             or value.get("revision") != release_sha
             or value.get("native_observation_plan_sha256") != plan_sha256
             or type(value.get("idempotent")) is not bool
@@ -18160,25 +19392,35 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
         )
         if native_policy != policy_sha:
             raise OwnerLauncherError("writer_activation_policy_mismatch")
-        frame_now = now()
-        native_frame = build_writer_authority_frame(
-            action="stage-native-authority",
-            revision=release_sha,
-            plan_sha256=native_plan_sha,
-            owner_approval=native_approval,
-            external_iam_receipt=native_iam,
-            previous_owner_approval_sha256=None,
-            previous_external_iam_receipt_sha256=None,
-            now_unix=frame_now,
+        native_frame: bytes | None = None
+
+        def build_native_frame_after_authorization() -> bytes:
+            nonlocal native_frame
+            if native_frame is not None:
+                raise OwnerLauncherError("writer_authority_frame_reused")
+            native_frame = build_writer_authority_frame(
+                action="stage-native-authority",
+                revision=release_sha,
+                plan_sha256=native_plan_sha,
+                owner_approval=native_approval,
+                external_iam_receipt=native_iam,
+                previous_owner_approval_sha256=None,
+                previous_external_iam_receipt_sha256=None,
+                now_unix=now(),
+            )
+            return native_frame
+
+        native_stage_raw = self._run_packaged_json(
+            release_sha,
+            module=WRITER_ACTIVATION_BRIDGE_MODULE,
+            arguments=("stage-native-authority",),
+            account=account,
+            stdin_frame_factory=build_native_frame_after_authorization,
         )
+        if native_frame is None:
+            raise OwnerLauncherError("writer_authority_frame_not_built")
         native_stage = self._validate_authority_stage(
-            self._run_packaged_json(
-                release_sha,
-                module=WRITER_ACTIVATION_BRIDGE_MODULE,
-                arguments=("stage-native-authority",),
-                account=account,
-                stdin_frame=native_frame,
-            ),
+            native_stage_raw,
             action="stage-native-authority",
             release_sha=release_sha,
             plan_sha256=native_plan_sha,
@@ -18298,24 +19540,35 @@ class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
         final_iam, final_iam_sha, final_policy = self._external_iam_receipt(final_iam)
         if final_policy != policy_sha:
             raise OwnerLauncherError("writer_activation_policy_mismatch")
-        final_frame = build_writer_authority_frame(
-            action="replace-final-authority",
-            revision=release_sha,
-            plan_sha256=final_plan_sha,
-            owner_approval=final_approval,
-            external_iam_receipt=final_iam,
-            previous_owner_approval_sha256=native_approval_sha,
-            previous_external_iam_receipt_sha256=native_iam_sha,
-            now_unix=now(),
+        final_frame: bytes | None = None
+
+        def build_final_frame_after_authorization() -> bytes:
+            nonlocal final_frame
+            if final_frame is not None:
+                raise OwnerLauncherError("writer_authority_frame_reused")
+            final_frame = build_writer_authority_frame(
+                action="replace-final-authority",
+                revision=release_sha,
+                plan_sha256=final_plan_sha,
+                owner_approval=final_approval,
+                external_iam_receipt=final_iam,
+                previous_owner_approval_sha256=native_approval_sha,
+                previous_external_iam_receipt_sha256=native_iam_sha,
+                now_unix=now(),
+            )
+            return final_frame
+
+        final_stage_raw = self._run_packaged_json(
+            release_sha,
+            module=WRITER_ACTIVATION_BRIDGE_MODULE,
+            arguments=("replace-final-authority",),
+            account=account,
+            stdin_frame_factory=build_final_frame_after_authorization,
         )
+        if final_frame is None:
+            raise OwnerLauncherError("writer_authority_frame_not_built")
         final_stage = self._validate_authority_stage(
-            self._run_packaged_json(
-                release_sha,
-                module=WRITER_ACTIVATION_BRIDGE_MODULE,
-                arguments=("replace-final-authority",),
-                account=account,
-                stdin_frame=final_frame,
-            ),
+            final_stage_raw,
             action="replace-final-authority",
             release_sha=release_sha,
             plan_sha256=final_plan_sha,
@@ -19176,6 +20429,7 @@ class OwnerGateIapTransport:
         "CLOUDSDK_PYTHON_ARGS",
         "PYTHONNOUSERSITE",
         "PYTHONDONTWRITEBYTECODE",
+        "PYTHONPYCACHEPREFIX",
     })
 
     def __init__(
@@ -21686,6 +22940,14 @@ def _cli_parser() -> argparse.ArgumentParser:
         help="publish the exact fork revision while every canary service is stopped",
     )
     actions.add_argument(
+        "--recover-stopped-writer-residue",
+        action="store_true",
+        help=(
+            "atomically quarantine only one receipt-bound stopped writer "
+            "staging pair before successor release publication"
+        ),
+    )
+    actions.add_argument(
         "--preflight-owner-gate-inert-inputs",
         action="store_true",
         help=(
@@ -21806,6 +23068,22 @@ def _cli_parser() -> argparse.ArgumentParser:
         ),
     )
     actions.add_argument(
+        "--recover-historical-schema-reconciliation-control",
+        action="store_true",
+        help=(
+            "finish one exact predecessor control bootstrap through the "
+            "current sealed runtime while all canary services remain stopped"
+        ),
+    )
+    actions.add_argument(
+        "--upgrade-canonical-writer-schema",
+        action="store_true",
+        help=(
+            "upgrade only the exact reviewed 1ef981b schema generation to the "
+            "sealed current release while all canary services remain stopped"
+        ),
+    )
+    actions.add_argument(
         "--publish-writer-preflight",
         action="store_true",
         help="stage and attest writer-only inputs without starting services",
@@ -21837,6 +23115,14 @@ def _cli_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--external-iam-policy-sha256",
         help="exact external IAM policy digest bound into writer staging",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
+        "--schema-reconciliation-source-release-sha",
+        help=(
+            "exact predecessor release whose deterministic stopped control "
+            "bootstrap must be recovered"
+        ),
         action=_OwnerStoreOnce,
     )
     parser.add_argument(
@@ -21908,6 +23194,27 @@ def _validate_storage_growth_cli_arguments(arguments: argparse.Namespace) -> Non
         raise OwnerLauncherError("storage_growth_owner_cli_invalid")
 
 
+def _validate_schema_control_recovery_cli_arguments(
+    arguments: argparse.Namespace,
+    *,
+    release_sha: str,
+) -> None:
+    recovery = bool(arguments.recover_historical_schema_reconciliation_control)
+    source = arguments.schema_reconciliation_source_release_sha
+    if recovery is (source is None):
+        raise OwnerLauncherError(
+            "schema_reconciliation_control_successor_recovery_cli_invalid"
+        )
+    if source is not None and (
+        not isinstance(source, str)
+        or _RELEASE_SHA.fullmatch(source) is None
+        or source == release_sha
+    ):
+        raise OwnerLauncherError(
+            "schema_reconciliation_control_successor_recovery_cli_invalid"
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     arguments = _cli_parser().parse_args(argv)
     release_sha = arguments.release_sha
@@ -21930,6 +23237,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             arguments.expected_current_boot_id_sha256,
         )
         _validate_storage_growth_cli_arguments(arguments)
+        _validate_schema_control_recovery_cli_arguments(
+            arguments,
+            release_sha=release_sha,
+        )
         if (
             arguments.author_v1_credential_migration
             and arguments.external_iam_policy_sha256 is not None
@@ -21946,6 +23257,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             (
                 arguments.reconcile_legacy_canary_db
                 or arguments.bootstrap_schema_reconciliation_control
+                or arguments.recover_historical_schema_reconciliation_control
+                or arguments.upgrade_canonical_writer_schema
                 or arguments.apply_phase_b_foundation
                 or arguments.publish_coordinator_input
             )
@@ -21956,6 +23269,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if (
                     arguments.reconcile_legacy_canary_db
                     or arguments.bootstrap_schema_reconciliation_control
+                    or arguments.recover_historical_schema_reconciliation_control
+                    or arguments.upgrade_canonical_writer_schema
                 )
                 else (
                     "phase_b_owner_cli_invalid"
@@ -22232,6 +23547,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_and_provenance_guard(release_sha)
             _emit_canonical_line(receipt)
             return 0
+        if arguments.recover_stopped_writer_residue:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError(
+                    "stopped_writer_residue_owner_cli_invalid"
+                )
+            recovery_transport = IapStoppedWriterResidueRecoveryTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = recovery_transport.recover(release_sha)
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
         if arguments.publish_stopped_release:
             if arguments.external_iam_policy_sha256 is not None:
                 raise OwnerLauncherError("writer_preflight_plan_invalid")
@@ -22284,6 +23613,42 @@ def main(argv: Sequence[str] | None = None) -> int:
                 gcloud_configuration=gcloud_configuration,
             )
             receipt = bootstrap_schema_reconciliation_control(
+                release_sha=release_sha,
+                transport=transport,
+                cloud_sql_client=GoogleRestClient(owner_identity),
+                owner_identity=owner_identity,
+                provenance_guard=runtime_and_provenance_guard,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.recover_historical_schema_reconciliation_control:
+            source_release_sha = str(
+                arguments.schema_reconciliation_source_release_sha
+            )
+            transport = IapSchemaReconciliationControlBootstrapTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = recover_historical_schema_reconciliation_control(
+                release_sha=release_sha,
+                source_release_sha=source_release_sha,
+                transport=transport,
+                cloud_sql_client=GoogleRestClient(owner_identity),
+                owner_identity=owner_identity,
+                provenance_guard=runtime_and_provenance_guard,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.upgrade_canonical_writer_schema:
+            transport = IapCanonicalWriterSchemaUpgradeTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = upgrade_canonical_writer_schema(
                 release_sha=release_sha,
                 transport=transport,
                 cloud_sql_client=GoogleRestClient(owner_identity),
@@ -22434,6 +23799,7 @@ __all__ = [
     "CloudSqlSchemaReconciliationControlAdmin",
     "CloudSqlSchemaReconciliationAdmin",
     "CloudSqlSchemaReconciliationExecutor",
+    "CloudSqlSchemaUpgradeAdmin",
     "CloudSqlTemporaryAdmin",
     "COORDINATOR_FAILURE_SCHEMA",
     "COORDINATOR_INPUT_PUBLICATION_SCHEMA",
@@ -22471,6 +23837,7 @@ __all__ = [
     "IapHostReceiptRotationTransport",
     "IapSchemaReconciliationTransport",
     "IapSchemaReconciliationControlBootstrapTransport",
+    "IapCanonicalWriterSchemaUpgradeTransport",
     "IapStoppedReleaseTransport",
     "IapWriterActivationBridgeTransport",
     "IapWriterPreflightTransport",
@@ -22506,6 +23873,7 @@ __all__ = [
     "SCHEMA_RECONCILIATION_ADMIN_CLEANUP_SSHSIG_NAMESPACE",
     "SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_MAGIC",
     "SCHEMA_RECONCILIATION_ADMIN_PREFLIGHT_SSHSIG_NAMESPACE",
+    "SCHEMA_RECONCILIATION_CONTROL_SUCCESSOR_RECOVERY_SCHEMA",
     "SCHEMA_RECONCILIATION_CREDENTIAL_BYTES",
     "SCHEMA_RECONCILIATION_MIN_GATE_REMAINING_SECONDS",
     "SCHEMA_RECONCILIATION_PREFLIGHT_AUTHORIZATION_MAGIC",
@@ -22515,6 +23883,7 @@ __all__ = [
     "SCHEMA_RECONCILIATION_CONTROL_ADMIN_ABSENCE_RECEIPT_SCHEMA",
     "SCHEMA_RECONCILIATION_CONTROL_ADMIN_AUTHORITY_RECEIPT_SCHEMA",
     "SCHEMA_RECONCILIATION_CONTROL_ADMIN_USERNAME_PREFIX",
+    "SCHEMA_RECONCILIATION_CONTROL_DATABASE_ROLES",
     "SCHEMA_RECONCILIATION_CONTROL_CLEANUP_MAGIC",
     "SCHEMA_RECONCILIATION_CONTROL_CLEANUP_SSHSIG_NAMESPACE",
     "SCHEMA_RECONCILIATION_CONTROL_CREDENTIAL_BYTES",
@@ -22569,6 +23938,7 @@ __all__ = [
     "bootstrap_trusted_gcloud_runtime",
     "repair_trusted_gcloud_sdk_bytecode",
     "bootstrap_schema_reconciliation_control",
+    "upgrade_canonical_writer_schema",
     "activate_trusted_owner_support",
     "install_owner_gate_activation_seal",
     "invoke_exact_production_storage_growth_owner_cli",

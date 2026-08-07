@@ -1065,6 +1065,54 @@ def _chat_completion_http_parts(
     return response_data, 200, response_headers
 
 
+class ThreadSafeAsyncQueue(asyncio.Queue):
+    """An ``asyncio.Queue`` that a non-loop thread can push into safely.
+
+    The SSE writers' streaming loops used to bridge a plain ``queue.Queue``
+    into the event loop via ``await loop.run_in_executor(None, lambda:
+    stream_q.get(timeout=0.5))`` inside a ``while True`` poll — a thread-pool
+    round trip on every 0.5s tick even when idle, plus up to 500ms of tail
+    latency between a delta landing in the queue and it reaching the
+    response. ``run_conversation`` itself runs on a worker thread (via
+    ``loop.run_in_executor``), so its ``stream_delta_callback`` closures
+    (``_on_delta`` etc.) call ``put_threadsafe`` from off the loop thread;
+    the consumer side just does a plain ``await queue.get()``/
+    ``asyncio.wait_for(queue.get(), timeout=...)``, woken immediately by
+    ``call_soon_threadsafe`` instead of polling.
+    """
+
+    def put_threadsafe(self, item, *, loop: asyncio.AbstractEventLoop = None) -> None:
+        (loop or self._loop_ref).call_soon_threadsafe(self.put_nowait, item)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Always constructed inside a running async handler (the SSE
+        # request handlers below), so get_running_loop() is safe here.
+        self._loop_ref = asyncio.get_running_loop()
+
+
+def _sse_frame(data: Any, *, event: str = None, ensure_ascii: bool = True) -> bytes:
+    """Encode one SSE frame: optional ``event:`` line, then ``data: <json>\n\n``.
+
+    The single source of truth for SSE frame serialization across every
+    streaming writer in this module — ``_write_sse_chat_completion`` (the
+    five call sites it was first extracted from), ``_write_sse_responses``'s
+    inner ``_write_event`` closure, and the ``/v1/runs`` event stream.  All
+    three used the identical ``json.dumps(data)`` / ``json.dumps(...,
+    ensure_ascii=False)`` + ``"\\ndata: ...\\n\\n"`` shape; routing them all
+    through here keeps the on-the-wire format in exactly one place.
+
+    ``ensure_ascii`` defaults to ``True``, byte-identical to a bare
+    ``json.dumps(data)``.  Callers that must preserve raw non-ASCII bytes on
+    the wire (the Responses-API writer historically used
+    ``ensure_ascii=False``) pass ``ensure_ascii=False`` explicitly — the
+    option exists so every writer shares one helper without changing any
+    existing byte stream.
+    """
+    prefix = f"event: {event}\n" if event else ""
+    return f"{prefix}data: {json.dumps(data, ensure_ascii=ensure_ascii)}\n\n".encode()
+
+
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
     """Parse a listen port without letting malformed env/config values crash startup."""
     try:
@@ -2229,12 +2277,15 @@ try:
     from cron.jobs import (
         list_jobs as _cron_list,
         get_job as _cron_get,
-        create_job as _cron_create,
         update_job as _cron_update,
         remove_job as _cron_remove,
         pause_job as _cron_pause,
         resume_job as _cron_resume,
         trigger_job as _cron_trigger,
+    )
+    from cron.scheduler import (
+        CronSchedulerRegistrationError as _CronSchedulerRegistrationError,
+        create_job_with_scheduler_registration as _cron_create,
     )
     _CRON_AVAILABLE = True
 except ImportError:
@@ -2246,6 +2297,9 @@ except ImportError:
     _cron_pause = None
     _cron_resume = None
     _cron_trigger = None
+
+    class _CronSchedulerRegistrationError(RuntimeError):
+        pass
 
 
 def _notify_cron_provider_jobs_changed() -> None:
@@ -2468,6 +2522,16 @@ class APIServerAdapter(BasePlatformAdapter):
         self._api_cleanup_tasks: set["asyncio.Task"] = set()
         self._api_cleanup_retry_tasks: Dict[str, "asyncio.Task"] = {}
         self._api_active_agents: Dict[int, Any] = {}
+        # Every agent currently inside _run_agent(), including the chat and
+        # responses routes that do not have a public /v1/runs run_id. Shutdown
+        # interrupts this exact adapter-owned set before subprocess cleanup.
+        self._shutdown_interruptible_agents: Dict[int, Any] = {}
+        # Shutdown can re-signal after its settle window so an agent that was
+        # admitted but materialized late is not missed.  Remember identities
+        # already signalled during this adapter lifetime: the re-signal must
+        # reach only newly materialized agents, not interrupt the same turn a
+        # second time while it is cooperatively unwinding.
+        self._shutdown_interrupted_agent_ids: set[int] = set()
         # Keep one agent per exact API conversation so consecutive turns retain
         # the byte-stable cached prompt prefix.
         self._api_agent_cache: "OrderedDict[APIRequestScope, Dict[str, Any]]" = (
@@ -3537,6 +3601,56 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         except Exception:
             return 0
+
+    def interrupt_active_runs(self, reason: str) -> int:
+        """Cooperatively interrupt every adapter-owned agent during shutdown.
+
+        The gateway drain accounts for API-server work through
+        ``active_agent_work_count()``, but those agents are owned by this
+        adapter rather than ``GatewayRunner._running_agents``, so
+        ``GatewayRunner._interrupt_running_agents()`` never reaches them: the
+        turn runs to the drain timeout with no cooperative interrupt and is
+        then amputated by the post-interrupt tool-subprocess kill.
+
+        Cover the same set the drain waits on, so accounting and interrupt
+        agree:
+
+        * ``_active_run_agents`` — the ``/v1/runs`` agents counted through
+          ``_active_run_tasks``.
+        * ``_shutdown_interruptible_agents`` — every ``_run_agent()`` turn
+          counted through ``_inflight_agent_runs``, i.e. both session-chat
+          routes, ``/v1/chat/completions`` and ``/v1/responses`` in their
+          streaming and non-streaming forms.
+
+        ``_pending_agent_requests`` is intentionally not covered: it counts
+        admitted requests that have not constructed an agent yet, so there is
+        no object to interrupt.
+
+        Returns the number of agents that accepted an interrupt.
+        """
+        agents: Dict[int, Any] = {}
+        for agent in list(self._active_run_agents.values()):
+            if agent is not None:
+                agents[id(agent)] = agent
+        for agent in list(self._shutdown_interruptible_agents.values()):
+            if agent is not None:
+                # Dedupe by object identity — the two registries are disjoint
+                # today (/v1/runs runs its own lifecycle, not _run_agent), but
+                # an agent published to both must still be interrupted once.
+                agents[id(agent)] = agent
+
+        interrupted = 0
+        for agent in agents.values():
+            agent_id = id(agent)
+            if agent_id in self._shutdown_interrupted_agent_ids:
+                continue
+            try:
+                if request_hard_interrupt(agent, reason):
+                    self._shutdown_interrupted_agent_ids.add(agent_id)
+                    interrupted += 1
+            except Exception as exc:
+                logger.debug("[api_server] failed interrupting active agent: %s", exc)
+        return interrupted
 
     @staticmethod
     def _gateway_is_draining() -> bool:
@@ -6695,6 +6809,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _get_effective_configurable_toolsets,
                 _get_platform_tools,
                 _toolset_has_keys,
+                get_nous_subscription_features,
             )
             from model_tools import _compute_tool_definitions
             from tools.registry import registry
@@ -6733,6 +6848,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 grouped.setdefault(toolset_name, []).append(dict(definition))
 
             group_names = set(metadata) | set(enabled_toolsets) | set(grouped)
+            features = get_nous_subscription_features(config)
             data: List[Dict[str, Any]] = []
             for name in sorted(group_names):
                 schemas = sorted(
@@ -6742,7 +6858,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                 )
                 try:
-                    configured = _toolset_has_keys(name, config)
+                    configured = _toolset_has_keys(
+                        name,
+                        config,
+                        features=features,
+                    )
                 except Exception:
                     configured = False
                 meta = metadata.get(name, {})
@@ -6794,9 +6914,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "output_tokens", "cache_read_tokens", "cache_write_tokens",
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
-            "_lineage_root_id",
+            "_lineage_root_id", "pinned", "archived",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
+        # SQLite stores these as 0/1; clients reconcile against a real boolean.
+        for flag in ("pinned", "archived"):
+            if flag in payload:
+                payload[flag] = bool(payload[flag])
         # Avoid exposing full system prompts/model_config through the client API;
         # callers only need to know whether those snapshots exist.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
@@ -7047,13 +7171,19 @@ class APIServerAdapter(BasePlatformAdapter):
             offset=offset,
             include_children=include_children,
             order_by_last_active=True,
+            # A pin means "always reachable", so a pinned conversation that has
+            # aged past the recency window is back-filled rather than dropped.
+            include_pinned=True,
         )
+        # Back-filled pins arrive PAST the limit, so counting them would report
+        # another page that doesn't exist. Only the recency window decides.
+        windowed = sum(1 for s in sessions if not s.get("pinned"))
         return web.json_response({
             "object": "list",
             "data": [self._session_response(s) for s in sessions],
             "limit": limit,
             "offset": offset,
-            "has_more": len(sessions) == limit,
+            "has_more": windowed >= limit,
         })
 
     async def _handle_create_session(self, request: "web.Request") -> "web.Response":
@@ -7221,10 +7351,18 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        # `pinned` and `archived` are durable per-session flags the desktop
+        # sidebar owns (the "keep" flag exempts a chat from the auto-archive
+        # sweep). Rejecting them here was silently 400ing every pin the desktop
+        # made, so pins only ever lived in that one app's localStorage.
+        allowed = {"title", "end_reason", "pinned", "archived"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
+
+        for flag in ("pinned", "archived"):
+            if flag in body and not isinstance(body[flag], bool):
+                return web.json_response(_openai_error(f"'{flag}' must be a boolean", code="invalid_session_field"), status=400)
 
         db = await self._ensure_session_db_async()
         if "title" in body:
@@ -7236,6 +7374,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
             except ValueError as exc:
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
+        if "pinned" in body:
+            await asyncio.to_thread(db.set_session_pinned, session_id, body["pinned"])
+        if "archived" in body:
+            await asyncio.to_thread(db.set_session_archived, session_id, body["archived"])
         if body.get("end_reason"):
             await self._offload_session_db(
                 db.end_session,
@@ -7903,8 +8045,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if item is None:
                     break
                 name, payload = item
-                data = json.dumps(payload, ensure_ascii=False)
-                await response.write(f"event: {name}\ndata: {data}\n\n".encode("utf-8"))
+                await response.write(_sse_frame(payload, event=name, ensure_ascii=False))
         except (asyncio.CancelledError, ConnectionResetError):
             agent = agent_ref[0]
             if agent is not None:
@@ -8355,8 +8496,7 @@ class APIServerAdapter(BasePlatformAdapter):
             reservation = self._reserve_agent_run()
             if reservation is None:
                 return self._concurrency_limit_response()
-            import queue as _q
-            _stream_q: _q.Queue = _q.Queue()
+            _stream_q = ThreadSafeAsyncQueue()
 
             def _on_delta(delta):
                 # Filter out None — the agent fires stream_delta_callback(None)
@@ -8366,8 +8506,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 # response, causing Open WebUI (and similar frontends) to miss
                 # the final answer after tool calls.  The SSE loop detects
                 # completion via agent_task.done() instead.
+                # Called from the worker thread running run_conversation —
+                # put_threadsafe (not put_nowait) is required here.
                 if delta is not None:
-                    _stream_q.put(delta)
+                    _stream_q.put_threadsafe(delta)
 
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
@@ -8393,7 +8535,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 _started_tool_call_ids.add(tool_call_id)
                 from agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
-                _stream_q.put(("__tool_progress__", {
+                _stream_q.put_threadsafe(("__tool_progress__", {
                     "tool": function_name,
                     "emoji": get_tool_emoji(function_name),
                     "label": label,
@@ -8411,14 +8553,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
-                _stream_q.put(("__tool_progress__", {
+                _stream_q.put_threadsafe(("__tool_progress__", {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
                 }))
 
             def _on_clarify(payload: Dict[str, Any]) -> None:
-                _stream_q.put(("__clarify_request__", payload))
+                _stream_q.put_threadsafe(("__clarify_request__", payload))
 
             def _on_approval(name: str, payload: Dict[str, Any]) -> None:
                 tag = (
@@ -8426,7 +8568,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     if name == "approval.request"
                     else "__approval_responded__"
                 )
-                _stream_q.put((tag, payload))
+                _stream_q.put_threadsafe((tag, payload))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
@@ -8471,7 +8613,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_task.add_done_callback(lambda _task: reservation.release())
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
-            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
+            agent_task.add_done_callback(lambda _fut: _stream_q.put_nowait(None))
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -8716,8 +8858,6 @@ class APIServerAdapter(BasePlatformAdapter):
         exact cleanup confirms.  The wrapper is never used as a cancellation
         shortcut because executor cancellation cannot stop ``run_conversation``.
         """
-        import queue as _q
-
         sse_headers = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -8745,7 +8885,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "created": created, "model": model,
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
-            await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+            await response.write(_sse_frame(role_chunk))
             last_activity = time.monotonic()
 
             # Helper — route a queue item to the correct SSE event.
@@ -8760,41 +8900,46 @@ class APIServerAdapter(BasePlatformAdapter):
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
                 if isinstance(item, tuple) and len(item) == 2:
-                    if item[0] == "__tool_progress__":
-                        event_data = json.dumps(item[1])
-                        await response.write(
-                            f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                        )
-                    elif item[0] == "__clarify_request__":
-                        event_data = json.dumps(item[1])
-                        await response.write(
-                            f"event: hermes.clarify.request\ndata: {event_data}\n\n".encode()
-                        )
-                    elif item[0] == "__approval_request__":
-                        event_data = json.dumps(item[1])
-                        await response.write(
-                            f"event: hermes.approval.request\ndata: {event_data}\n\n".encode()
-                        )
-                    elif item[0] == "__approval_responded__":
-                        event_data = json.dumps(item[1])
-                        await response.write(
-                            f"event: hermes.approval.responded\ndata: {event_data}\n\n".encode()
-                        )
+                    event_name = {
+                        "__tool_progress__": "hermes.tool.progress",
+                        "__clarify_request__": "hermes.clarify.request",
+                        "__approval_request__": "hermes.approval.request",
+                        "__approval_responded__": "hermes.approval.responded",
+                    }.get(item[0])
+                    if event_name is not None:
+                        await response.write(_sse_frame(item[1], event=event_name))
+                    else:
+                        content_chunk = {
+                            "id": completion_id,
+                            "object": "chat.completion.chunk",
+                            "created": created,
+                            "model": model,
+                            "choices": [
+                                {
+                                    "index": 0,
+                                    "delta": {"content": item},
+                                    "finish_reason": None,
+                                }
+                            ],
+                        }
+                        await response.write(_sse_frame(content_chunk))
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
                         "choices": [{"index": 0, "delta": {"content": item}, "finish_reason": None}],
                     }
-                    await response.write(f"data: {json.dumps(content_chunk)}\n\n".encode())
+                    await response.write(_sse_frame(content_chunk))
                 return time.monotonic()
 
-            # Stream content chunks as they arrive from the agent
-            loop = asyncio.get_running_loop()
+            # Stream content chunks as they arrive from the agent. Woken
+            # directly by put_threadsafe's call_soon_threadsafe — no
+            # executor hop, no poll-interval latency (see
+            # ThreadSafeAsyncQueue's docstring).
             while True:
                 try:
-                    delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
-                except _q.Empty:
+                    delta = await asyncio.wait_for(stream_q.get(), timeout=0.5)
+                except asyncio.TimeoutError:
                     if agent_task.done():
                         # Drain any remaining items
                         while True:
@@ -8803,7 +8948,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 if delta is None:
                                     break
                                 last_activity = await _emit(delta)
-                            except _q.Empty:
+                            except asyncio.QueueEmpty:
                                 break
                         break
                     if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
@@ -8924,7 +9069,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         else "agent_error"
                     ),
                 }
-            await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
+            await response.write(_sse_frame(finish_chunk))
             await response.write(b"data: [DONE]\n\n")
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             # Capture and reap only the background processes owned by this
@@ -8982,7 +9127,7 @@ class APIServerAdapter(BasePlatformAdapter):
                             "turn_exit_reason": "sse_writer_exception",
                         },
                     }
-                    await response.write(f"data: {json.dumps(error_chunk)}\n\n".encode())
+                    await response.write(_sse_frame(error_chunk))
                     await response.write(b"data: [DONE]\n\n")
                 except Exception:
                     pass
@@ -9110,11 +9255,8 @@ class APIServerAdapter(BasePlatformAdapter):
         ``in_progress`` with an exact cleanup detail until the Canonical
         tombstone confirms; only then may it become terminal.
         """
-        import queue as _q
-
         if response_store is None:
             response_store = self._response_store_for_request()
-
         sse_headers = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
@@ -9159,8 +9301,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if "sequence_number" not in data:
                 data["sequence_number"] = sequence_number
             sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            await response.write(payload.encode())
+            await response.write(_sse_frame(data, event=event_type))
 
         def _envelope(status: str) -> Dict[str, Any]:
             env: Dict[str, Any] = {
@@ -9575,11 +9716,10 @@ class APIServerAdapter(BasePlatformAdapter):
                         _batch_buf = []
                         await _emit_text_delta(combined)
 
-            loop = asyncio.get_running_loop()
             while True:
                 try:
-                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
-                except _q.Empty:
+                    item = await asyncio.wait_for(stream_q.get(), timeout=0.5)
+                except asyncio.TimeoutError:
                     if agent_task.done():
                         # Drain remaining
                         while True:
@@ -9589,7 +9729,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                     break
                                 await _dispatch(item)
                                 last_activity = time.monotonic()
-                            except _q.Empty:
+                            except asyncio.QueueEmpty:
                                 break
                         break
                     if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
@@ -10114,15 +10254,16 @@ class APIServerAdapter(BasePlatformAdapter):
             # Streaming branch — emit OpenAI Responses SSE events as the
             # agent runs so frontends can render text deltas and tool
             # calls in real time.  See _write_sse_responses for details.
-            import queue as _q
-            _stream_q: _q.Queue = _q.Queue()
+            _stream_q = ThreadSafeAsyncQueue()
 
             def _on_delta(delta):
                 # None from the agent is a CLI box-close signal, not EOS.
                 # Forwarding would kill the SSE stream prematurely; the
                 # SSE writer detects completion via agent_task.done().
+                # Called from the worker thread running run_conversation —
+                # put_threadsafe (not put_nowait) is required here.
                 if delta is not None:
-                    _stream_q.put(delta)
+                    _stream_q.put_threadsafe(delta)
 
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Queue non-start tool progress events if needed in future.
@@ -10135,7 +10276,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Queue a started tool for live function_call streaming."""
-                _stream_q.put(("__tool_started__", {
+                _stream_q.put_threadsafe(("__tool_started__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
                     "arguments": function_args or {},
@@ -10143,7 +10284,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
             def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
                 """Queue a completed tool result for live function_call_output streaming."""
-                _stream_q.put(("__tool_completed__", {
+                _stream_q.put_threadsafe(("__tool_completed__", {
                     "tool_call_id": tool_call_id,
                     "name": function_name,
                     "arguments": function_args or {},
@@ -10151,7 +10292,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 }))
 
             def _on_clarify(payload: Dict[str, Any]) -> None:
-                _stream_q.put(("__clarify_request__", payload))
+                _stream_q.put_threadsafe(("__clarify_request__", payload))
 
             def _on_approval(name: str, payload: Dict[str, Any]) -> None:
                 tag = (
@@ -10159,7 +10300,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     if name == "approval.request"
                     else "__approval_responded__"
                 )
-                _stream_q.put((tag, payload))
+                _stream_q.put_threadsafe((tag, payload))
 
             agent_ref = [None]
             cleanup_ref = [None]
@@ -10191,7 +10332,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent_task.add_done_callback(lambda _task: reservation.release())
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
-            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
+            agent_task.add_done_callback(lambda _fut: _stream_q.put_nowait(None))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
             model_name = body.get("model", self._active_model_name())
@@ -10539,8 +10680,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["repeat"] = repeat
 
             job = _cron_create(**kwargs)
-            _notify_cron_provider_jobs_changed()
             return web.json_response({"job": job})
+        except _CronSchedulerRegistrationError as e:
+            return web.json_response(e.to_dict(), status=424)
         except Exception as e:
             return web.json_response({"error": _redact_api_error_text(e)}, status=500)
 
@@ -11764,6 +11906,9 @@ class APIServerAdapter(BasePlatformAdapter):
                             agent._api_approval_session_key = bound_session_key
                             with self._api_agent_cache_lock:
                                 self._api_active_agents[id(agent)] = agent
+                            # Shutdown interrupt coverage for every _run_agent
+                            # caller, including routes without a public run_id.
+                            self._shutdown_interruptible_agents[id(agent)] = agent
                             if agent_ref is not None:
                                 agent_ref[0] = agent
                             effective_task_id = request_authority.bind(
@@ -11945,6 +12090,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         # left running.
                         if agent is not None:
                             _clear_turn_process_ownership(agent)
+                            self._shutdown_interruptible_agents.pop(id(agent), None)
                             # This runs while the per-conversation execution
                             # lock is still held.  The old callback can no
                             # longer execute, and a queued next turn cannot yet
@@ -13120,8 +13266,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     # Run finished — send final SSE comment and close
                     await response.write(b": stream closed\n\n")
                     break
-                payload = f"data: {json.dumps(event)}\n\n"
-                await response.write(payload.encode())
+                payload = _sse_frame(event)
+                await response.write(payload)
         except Exception as exc:
             logger.debug("[api_server] SSE stream error for run %s: %s", run_id, exc)
         finally:

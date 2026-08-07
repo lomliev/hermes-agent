@@ -72,6 +72,11 @@ BEGIN
                  FROM pg_catalog.pg_auth_members AS membership
                  JOIN provider_forward_role_closure AS reachable
                    ON reachable.roleid = membership.member
+           ), expected_forward_role_closure(roleid) AS (
+               SELECT roleid FROM provider_forward_role_closure
+               UNION
+               SELECT oid FROM pg_catalog.pg_roles
+                WHERE rolname = 'canonical_brain_migration_owner'
            )
            SELECT (SELECT pg_catalog.count(*) = 1 FROM bootstrap)
               AND (SELECT pg_catalog.bool_and(
@@ -81,21 +86,24 @@ BEGIN
                        AND rolconnlimit = -1 AND rolvaliduntil IS NULL
                        AND rolconfig IS NULL
                    ) FROM bootstrap)
-              AND (SELECT pg_catalog.count(*) = 1
+              AND (SELECT pg_catalog.count(*) = 2
                           AND pg_catalog.bool_and(
-                              granted_name = 'cloudsqlsuperuser'
-                              AND member_name = SESSION_USER
+                              member_name = SESSION_USER
                               AND grantor_name = 'cloudsqladmin'
                               AND admin_option IS FALSE
                               AND inherit_option IS TRUE
                               AND set_option IS TRUE
+                              AND granted_name IN (
+                                  'canonical_brain_migration_owner',
+                                  'cloudsqlsuperuser'
+                              )
                           ) FROM relevant_edges)
               AND NOT EXISTS (
                   (SELECT roleid FROM forward_role_closure
                    EXCEPT
-                   SELECT roleid FROM provider_forward_role_closure)
+                   SELECT roleid FROM expected_forward_role_closure)
                   UNION ALL
-                  (SELECT roleid FROM provider_forward_role_closure
+                  (SELECT roleid FROM expected_forward_role_closure
                    EXCEPT
                    SELECT roleid FROM forward_role_closure)
               )
@@ -173,21 +181,22 @@ CREATE ROLE canonical_brain_schema_reconciler
     CONNECTION LIMIT -1
     PASSWORD NULL;
 
--- PostgreSQL 18 gives a CREATEROLE creator one implicit ADMIN membership.
--- Its grantor is the provider bootstrap role, so the member cannot revoke it.
--- The terminal check admits only that exact edge; the outer Cloud deletion
--- must prove that it disappeared before any normal reconciliation session.
+-- Vanilla PostgreSQL 18 materializes one implicit ADMIN membership for a
+-- CREATEROLE creator.  Cloud SQL grants the same implicit creator authority
+-- without materializing that pg_auth_members edge.  The terminal check admits
+-- only those two provider-safe shapes: no edge, or the one exact vanilla edge.
+-- If materialized, outer Cloud deletion must prove that it disappeared before
+-- any normal reconciliation session.
 
 SET LOCAL ROLE cloudsqlsuperuser;
 
--- Cloud SQL's provider-admin role may create and re-owner customer objects,
--- but the service intentionally does not promise that a freshly granted
--- customer-role edge is immediately usable by SET ROLE.  Keep the provider
--- boundary active only for this stopped, serializable bootstrap transaction;
--- install the fixed objects, transfer their ownership exactly, and persist no
--- membership edge from the one-time login to the migration owner.
+-- Cloud SQL pre-binds the one-time login to both exact roles before the first
+-- database connection.  Use the provider role only for the database grant,
+-- then return to the session identity so PostgreSQL can prove its direct
+-- migration-owner membership while creating and re-owning fixed objects.
 GRANT CONNECT ON DATABASE muncho_canary_brain
     TO canonical_brain_schema_reconciler;
+RESET ROLE;
 CREATE SCHEMA canonical_brain_reconciliation
     AUTHORIZATION canonical_brain_migration_owner;
 
@@ -959,6 +968,7 @@ DECLARE
     observer_oid oid;
     apply_oid oid;
     managed_cloudsqladmin_database_exact boolean;
+    terminal_diagnostics jsonb;
 BEGIN
     SELECT oid INTO STRICT control_namespace_oid
       FROM pg_catalog.pg_namespace
@@ -1049,13 +1059,16 @@ BEGIN
             WHERE oid = database_oid
        )) <> 'cloudsqlsuperuser'
        OR NOT (
-           SELECT pg_catalog.count(*) = 1
-                  AND pg_catalog.bool_and(
-                      member.rolname = SESSION_USER
-                      AND grantor.rolname = 'cloudsqladmin'
-                      AND membership.admin_option IS TRUE
-                      AND membership.inherit_option IS FALSE
-                      AND membership.set_option IS FALSE
+           SELECT pg_catalog.count(*) = 0
+                  OR (
+                      pg_catalog.count(*) = 1
+                      AND pg_catalog.bool_and(
+                          member.rolname = SESSION_USER
+                          AND grantor.rolname = 'cloudsqladmin'
+                          AND membership.admin_option IS TRUE
+                          AND membership.inherit_option IS FALSE
+                          AND membership.set_option IS FALSE
+                      )
                   )
              FROM pg_catalog.pg_auth_members AS membership
              JOIN pg_catalog.pg_roles AS member
@@ -1068,16 +1081,23 @@ BEGIN
            SELECT 1 FROM pg_catalog.pg_auth_members
             WHERE member = executor_oid OR grantor = executor_oid
        )
-       OR EXISTS (
-           SELECT 1
+       OR NOT (
+           SELECT pg_catalog.count(*) = 1
+                  AND pg_catalog.bool_and(
+                      member.rolname = SESSION_USER
+                      AND grantor.rolname = 'cloudsqladmin'
+                      AND membership.admin_option IS FALSE
+                      AND membership.inherit_option IS TRUE
+                      AND membership.set_option IS TRUE
+                  )
              FROM pg_catalog.pg_auth_members AS membership
              JOIN pg_catalog.pg_roles AS owner
                ON owner.oid = membership.roleid
+             JOIN pg_catalog.pg_roles AS member
+               ON member.oid = membership.member
+             JOIN pg_catalog.pg_roles AS grantor
+               ON grantor.oid = membership.grantor
             WHERE owner.rolname = 'canonical_brain_migration_owner'
-              AND membership.member = (
-                  SELECT oid FROM pg_catalog.pg_roles
-                   WHERE rolname = SESSION_USER
-              )
        )
        OR EXISTS (
            SELECT 1 FROM pg_catalog.pg_shdepend
@@ -1271,6 +1291,309 @@ BEGIN
               AND helper.proname = '_discord_guild_routeback_target_valid'
        )
     THEN
+        SELECT pg_catalog.jsonb_build_object(
+            'session_identity_exact', CURRENT_USER = SESSION_USER,
+            'executor_present', executor_oid IS NOT NULL,
+            'database_present', database_oid IS NOT NULL,
+            'observer_present', observer_oid IS NOT NULL,
+            'apply_present', apply_oid IS NOT NULL,
+            'executor_attributes_exact', EXISTS (
+                SELECT 1 FROM pg_catalog.pg_roles AS role
+                 WHERE role.oid = executor_oid
+                   AND NOT role.rolcanlogin
+                   AND NOT role.rolinherit
+                   AND NOT role.rolsuper
+                   AND NOT role.rolcreatedb
+                   AND NOT role.rolcreaterole
+                   AND NOT role.rolreplication
+                   AND NOT role.rolbypassrls
+                   AND role.rolconnlimit = -1
+                   AND role.rolvaliduntil IS NULL
+                   AND role.rolconfig IS NULL
+            ),
+            'migration_owner_attributes_exact', EXISTS (
+                SELECT 1 FROM pg_catalog.pg_roles AS owner
+                 WHERE owner.rolname = 'canonical_brain_migration_owner'
+                   AND NOT owner.rolcanlogin
+                   AND NOT owner.rolinherit
+                   AND NOT owner.rolsuper
+                   AND NOT owner.rolcreatedb
+                   AND NOT owner.rolcreaterole
+                   AND NOT owner.rolreplication
+                   AND NOT owner.rolbypassrls
+                   AND owner.rolconnlimit = -1
+                   AND owner.rolvaliduntil IS NULL
+                   AND owner.rolconfig IS NULL
+            ),
+            'database_owner_exact', pg_catalog.pg_get_userbyid((
+                SELECT datdba FROM pg_catalog.pg_database
+                 WHERE oid = database_oid
+            )) = 'cloudsqlsuperuser',
+            'executor_control_membership_count', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_auth_members AS membership
+                 WHERE membership.roleid = executor_oid
+            ),
+            'executor_control_membership_exact', (
+                SELECT pg_catalog.count(*) = 0
+                       OR (
+                           pg_catalog.count(*) = 1
+                           AND pg_catalog.bool_and(
+                               member.rolname = SESSION_USER
+                               AND grantor.rolname = 'cloudsqladmin'
+                               AND membership.admin_option IS TRUE
+                               AND membership.inherit_option IS FALSE
+                               AND membership.set_option IS FALSE
+                           )
+                       )
+                  FROM pg_catalog.pg_auth_members AS membership
+                  JOIN pg_catalog.pg_roles AS member
+                    ON member.oid = membership.member
+                  JOIN pg_catalog.pg_roles AS grantor
+                    ON grantor.oid = membership.grantor
+                 WHERE membership.roleid = executor_oid
+            ),
+            'executor_member_or_grantor_edges', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_auth_members
+                 WHERE member = executor_oid OR grantor = executor_oid
+            ),
+            'migration_owner_control_membership_count', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_auth_members AS membership
+                  JOIN pg_catalog.pg_roles AS owner
+                    ON owner.oid = membership.roleid
+                 WHERE owner.rolname = 'canonical_brain_migration_owner'
+            ),
+            'migration_owner_control_membership_exact', (
+                SELECT pg_catalog.count(*) = 1
+                       AND pg_catalog.bool_and(
+                           member.rolname = SESSION_USER
+                           AND grantor.rolname = 'cloudsqladmin'
+                           AND membership.admin_option IS FALSE
+                           AND membership.inherit_option IS TRUE
+                           AND membership.set_option IS TRUE
+                       )
+                  FROM pg_catalog.pg_auth_members AS membership
+                  JOIN pg_catalog.pg_roles AS owner
+                    ON owner.oid = membership.roleid
+                  JOIN pg_catalog.pg_roles AS member
+                    ON member.oid = membership.member
+                  JOIN pg_catalog.pg_roles AS grantor
+                    ON grantor.oid = membership.grantor
+                 WHERE owner.rolname = 'canonical_brain_migration_owner'
+            ),
+            'executor_owned_dependencies', (
+                SELECT pg_catalog.count(*) FROM pg_catalog.pg_shdepend
+                 WHERE refclassid =
+                       'pg_catalog.pg_authid'::pg_catalog.regclass
+                   AND refobjid = executor_oid
+                   AND deptype = 'o'
+            ),
+            'executor_acl_dependencies', (
+                SELECT pg_catalog.count(*) FROM pg_catalog.pg_shdepend
+                 WHERE refclassid =
+                       'pg_catalog.pg_authid'::pg_catalog.regclass
+                   AND refobjid = executor_oid
+                   AND deptype = 'a'
+            ),
+            'executor_acl_dependencies_exact', (
+                SELECT pg_catalog.count(*) = 4
+                       AND pg_catalog.bool_and(
+                           dependency.objsubid = 0
+                           AND (
+                               (dependency.dbid = 0
+                                AND dependency.classid =
+                                    'pg_catalog.pg_database'::
+                                    pg_catalog.regclass
+                                AND dependency.objid = database_oid)
+                               OR
+                               (dependency.dbid = database_oid
+                                AND dependency.classid =
+                                    'pg_catalog.pg_namespace'::
+                                    pg_catalog.regclass
+                                AND dependency.objid = control_namespace_oid)
+                               OR
+                               (dependency.dbid = database_oid
+                                AND dependency.classid =
+                                    'pg_catalog.pg_proc'::pg_catalog.regclass
+                                AND dependency.objid IN (
+                                    observer_oid, apply_oid
+                                ))
+                           )
+                       )
+                  FROM pg_catalog.pg_shdepend AS dependency
+                 WHERE dependency.refclassid =
+                       'pg_catalog.pg_authid'::pg_catalog.regclass
+                   AND dependency.refobjid = executor_oid
+                   AND dependency.deptype = 'a'
+            ),
+            'executor_non_acl_dependencies', (
+                SELECT pg_catalog.count(*) FROM pg_catalog.pg_shdepend
+                 WHERE refclassid =
+                       'pg_catalog.pg_authid'::pg_catalog.regclass
+                   AND refobjid = executor_oid
+                   AND deptype <> 'a'
+            ),
+            'control_schema_owner_exact', pg_catalog.pg_get_userbyid((
+                SELECT nspowner FROM pg_catalog.pg_namespace
+                 WHERE oid = control_namespace_oid
+            )) = 'canonical_brain_migration_owner',
+            'executor_schema_create', pg_catalog.has_schema_privilege(
+                'canonical_brain_schema_reconciler',
+                control_namespace_oid, 'CREATE'
+            ),
+            'executor_schema_usage', pg_catalog.has_schema_privilege(
+                'canonical_brain_schema_reconciler',
+                control_namespace_oid, 'USAGE'
+            ),
+            'executor_database_connect', pg_catalog.has_database_privilege(
+                'canonical_brain_schema_reconciler',
+                'muncho_canary_brain', 'CONNECT'
+            ),
+            'executor_database_create', pg_catalog.has_database_privilege(
+                'canonical_brain_schema_reconciler',
+                'muncho_canary_brain', 'CREATE'
+            ),
+            'executor_database_temporary',
+                pg_catalog.has_database_privilege(
+                    'canonical_brain_schema_reconciler',
+                    'muncho_canary_brain', 'TEMPORARY'
+                ),
+            'executor_database_acl_count', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_database AS database,
+                       LATERAL pg_catalog.aclexplode(COALESCE(
+                           database.datacl,
+                           pg_catalog.acldefault('d', database.datdba)
+                       )) AS acl
+                 WHERE database.oid = database_oid
+                   AND acl.grantee = executor_oid
+            ),
+            'executor_database_acl_exact', (
+                SELECT pg_catalog.count(*) = 1
+                       AND pg_catalog.bool_and(
+                           acl.grantee = executor_oid
+                           AND acl.grantor = database.datdba
+                           AND acl.privilege_type = 'CONNECT'
+                           AND acl.is_grantable IS FALSE
+                       )
+                  FROM pg_catalog.pg_database AS database,
+                       LATERAL pg_catalog.aclexplode(COALESCE(
+                           database.datacl,
+                           pg_catalog.acldefault('d', database.datdba)
+                       )) AS acl
+                 WHERE database.oid = database_oid
+                   AND acl.grantee = executor_oid
+            ),
+            'connectable_database_count', (
+                SELECT pg_catalog.count(*) FROM pg_catalog.pg_database
+                 WHERE datallowconn AND NOT datistemplate
+            ),
+            'allowconn_database_count', (
+                SELECT pg_catalog.count(*) FROM pg_catalog.pg_database
+                 WHERE datallowconn
+            ),
+            'managed_cloudsqladmin_database_exact',
+                managed_cloudsqladmin_database_exact,
+            'executor_unexpected_database_scope_count', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_database AS database
+                 WHERE database.datallowconn
+                   AND database.datname <> pg_catalog.current_database()
+                   AND (
+                       pg_catalog.pg_get_userbyid(database.datdba) =
+                           'canonical_brain_schema_reconciler'
+                       OR pg_catalog.has_database_privilege(
+                           executor_oid, database.oid, 'CONNECT'
+                       )
+                       OR pg_catalog.has_database_privilege(
+                           executor_oid, database.oid, 'CREATE'
+                       )
+                       OR pg_catalog.has_database_privilege(
+                           executor_oid, database.oid, 'TEMPORARY'
+                       )
+                   )
+                   AND NOT (
+                       database.datname = 'cloudsqladmin'
+                       AND managed_cloudsqladmin_database_exact
+                       AND pg_catalog.pg_get_userbyid(database.datdba) <>
+                           'canonical_brain_schema_reconciler'
+                       AND pg_catalog.has_database_privilege(
+                           executor_oid, database.oid, 'CONNECT'
+                       )
+                       AND NOT pg_catalog.has_database_privilege(
+                           executor_oid, database.oid, 'CREATE'
+                       )
+                       AND pg_catalog.has_database_privilege(
+                           executor_oid, database.oid, 'TEMPORARY'
+                       )
+                   )
+            ),
+            'control_routine_count', (
+                SELECT pg_catalog.count(*) FROM pg_catalog.pg_proc
+                 WHERE pronamespace = control_namespace_oid
+            ),
+            'control_routine_contract_drift_count', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_proc AS routine
+                  JOIN pg_catalog.pg_language AS language
+                    ON language.oid = routine.prolang
+                 WHERE routine.pronamespace = control_namespace_oid
+                   AND NOT (
+                       pg_catalog.pg_get_userbyid(routine.proowner)
+                           = 'canonical_brain_migration_owner'
+                       AND routine.pronargs = 0
+                       AND routine.prokind = 'f'
+                       AND routine.prosecdef IS TRUE
+                       AND routine.provolatile = 'v'
+                       AND routine.proparallel = 'u'
+                       AND routine.proleakproof IS FALSE
+                       AND routine.proisstrict IS FALSE
+                       AND routine.proretset IS TRUE
+                       AND language.lanname = 'plpgsql'
+                       AND routine.proconfig = ARRAY[
+                           'search_path=pg_catalog, pg_temp',
+                           'TimeZone=UTC',
+                           'DateStyle=ISO, YMD',
+                           'IntervalStyle=postgres',
+                           'extra_float_digits=3',
+                           'bytea_output=hex',
+                           'lock_timeout=15s',
+                           'statement_timeout=5min'
+                       ]::text[]
+                       AND (
+                           SELECT pg_catalog.count(*) = 2
+                                  AND pg_catalog.bool_and(
+                                      acl.grantor = routine.proowner
+                                      AND acl.privilege_type = 'EXECUTE'
+                                      AND acl.is_grantable IS FALSE
+                                      AND acl.grantee IN (
+                                          routine.proowner, executor_oid
+                                      )
+                                  )
+                             FROM pg_catalog.aclexplode(COALESCE(
+                                 routine.proacl,
+                                 pg_catalog.acldefault(
+                                     'f', routine.proowner
+                                 )
+                             )) AS acl
+                       )
+                   )
+            ),
+            'unexpected_helper_count', (
+                SELECT pg_catalog.count(*)
+                  FROM pg_catalog.pg_proc AS helper
+                  JOIN pg_catalog.pg_namespace AS helper_namespace
+                    ON helper_namespace.oid = helper.pronamespace
+                 WHERE helper_namespace.nspname = 'canonical_brain'
+                   AND helper.proname =
+                       '_discord_guild_routeback_target_valid'
+            )
+        ) INTO STRICT terminal_diagnostics;
+        RAISE WARNING
+            'schema reconciliation control terminal diagnostics: %',
+            terminal_diagnostics;
         RAISE EXCEPTION 'schema reconciliation control bootstrap terminal failed';
     END IF;
 END

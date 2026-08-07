@@ -287,6 +287,7 @@ def test_public_native_preflight_wrapper_has_no_mutation_surface(monkeypatch):
     assert calls[0] == "root"
     assert calls[1][1]["require_installed"] is False
     assert calls[1][1]["require_original_boot"] is True
+    assert calls[1][1]["require_collector_fresh"] is True
     assert calls[2] == ("fresh", 120)
     assert result["observed_at_unix"] == 120
     assert result["collector_hba_expires_at_unix"] == 400
@@ -315,6 +316,7 @@ def test_apply_seals_terminal_receipt_without_install_or_start(tmp_path, monkeyp
             "writer_config": {"sha256": "1" * 64},
             "gateway_config": {"sha256": "2" * 64},
             "writer_unit": {"sha256": "3" * 64},
+            "phase_b_readiness_unit": {"sha256": "5" * 64},
             "gateway_unit": {"sha256": "4" * 64},
         },
     )
@@ -649,6 +651,7 @@ def test_apply_retry_is_safe_after_every_durable_boundary(
             "writer_config": {"sha256": "1" * 64},
             "gateway_config": {"sha256": "2" * 64},
             "writer_unit": {"sha256": "3" * 64},
+            "phase_b_readiness_unit": {"sha256": "5" * 64},
             "gateway_unit": {"sha256": "4" * 64},
         },
     )

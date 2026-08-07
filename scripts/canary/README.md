@@ -728,7 +728,32 @@ SQL statement, credential, or semantic instruction. It selects only reviewed
 packaged commands from the sealed wheel and validates one canonical JSON result
 from each command.
 
-The first writer action is a stopped preflight:
+If the stopped database is the exact reviewed `1ef981b4` generation, first
+install/revalidate the fixed reconciliation control and run the bounded schema
+upgrade. The upgrade also accepts the exact current target as a crash-recovery
+replay; every other generation fails closed:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --upgrade-canonical-writer-schema
+```
+
+The launcher creates one deterministic temporary Cloud SQL login in the
+already-installed `muncho_canary_reconciler_<16hex>` observer namespace, with
+only the two fixed roles required by this migration. The stronger dual-role
+authority receipt distinguishes this stopped upgrade from normal
+reconciliation. It transmits the credential once to the stopped root runtime,
+commits source observation, three fixed digest-pinned sealed-SQL chunks, target
+observation, and canonical-truth equality in one `SERIALIZABLE` transaction,
+then deletes the login before accepting a fresh writer-session terminal
+receipt. The chunks stay below the normal database query-size bound; this
+action does not widen the general SQL transport.
+
+The next writer action is a stopped preflight:
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
@@ -832,8 +857,36 @@ cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
   --publish-stopped-release
 ```
 
-Run `--publish-writer-preflight` and `--activate-writer-stopped` exactly as
-shown above. Next publish the secret-free, public-channel fixture:
+Install/revalidate the schema reconciliation control, run
+`--upgrade-canonical-writer-schema`, and then run `--publish-writer-preflight`
+and `--activate-writer-stopped` exactly as shown above. Next publish the
+secret-free, public-channel fixture:
+
+If a predecessor control bootstrap reached its exact temporary Cloud SQL
+login but the local trusted runtime can no longer replay that release, recover
+only that predecessor protocol through a reviewed successor before continuing:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-successor-release-sha> \
+  --recover-historical-schema-reconciliation-control \
+  --schema-reconciliation-source-release-sha <exact-predecessor-release-sha>
+```
+
+The caller cannot select a login or database object. The predecessor's sealed
+stopped-release gate deterministically reproduces the exact protocol and login;
+the successor supplies only the current trusted local runtime. Success requires
+the predecessor terminal receipt to prove the control installed, the temporary
+admin absent, and services stopped. A current-release source, an unrelated
+source, or any partial terminal receipt fails closed.
+If an interrupted stopped schema upgrade already committed the single reviewed
+route-back helper, the replay accepts it only after collecting the complete
+live schema contract and proving it exactly matches the predecessor's sealed
+target. A duplicate helper, a different definition, or any surrounding schema
+drift fails closed.
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\

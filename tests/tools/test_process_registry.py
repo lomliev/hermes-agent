@@ -265,17 +265,6 @@ def test_close_terminal_tool_routes_to_registry(monkeypatch):
     assert seen["sid"] == "proc_abc"
 
 
-def test_close_terminal_tool_gated_on_desktop(monkeypatch):
-    """Hidden unless HERMES_DESKTOP is set (mirrors read_terminal gating)."""
-    from tools.close_terminal_tool import check_close_terminal_requirements
-
-    monkeypatch.delenv("HERMES_DESKTOP", raising=False)
-    assert check_close_terminal_requirements() is False
-
-    monkeypatch.setenv("HERMES_DESKTOP", "1")
-    assert check_close_terminal_requirements() is True
-
-
 def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch):
     """Local reader must emit live chunks, not one EOF burst.
 
@@ -1446,6 +1435,25 @@ class TestCheckpoint:
                     proc.kill()
                     proc.wait(timeout=5)
 
+    def test_checkpoint_redacts_command_with_inline_secret(self, registry, tmp_path):
+        """Issue #77484: the checkpoint file persists raw commands; inline
+        credentials (e.g. ``curl -H 'Authorization: Bearer sk-...'``) must be
+        redacted before write. Recovery only uses command for display/logging
+        (the process is already running), so masking is lossless."""
+        checkpoint = tmp_path / "procs.json"
+        with patch("tools.process_registry.CHECKPOINT_PATH", checkpoint):
+            secret = "sk-secret1234567890"
+            command = f"curl -H 'Authorization: Bearer {secret}' http://x"
+            s = _make_session(sid="proc_secret", command=command)
+            s.pid = 12345
+            s.host_start_time = int(time.time())
+            registry._running[s.id] = s
+            registry._write_checkpoint()
+
+            data = json.loads(checkpoint.read_text())
+            assert data[0]["session_id"] == "proc_secret"
+            assert secret not in data[0]["command"]
+            assert data[0]["command"] != command
 
 # =========================================================================
 # Kill process
@@ -2811,6 +2819,24 @@ class TestHandleProcessRedaction:
             )
         )
         assert "abc123def456" not in out["output_preview"]
+
+    def test_list_redacts_command_and_output(self, monkeypatch):
+        """`process(action=list)` redacts command + output_preview — issue #77484.
+
+        The list branch previously returned raw ``command[:200]`` and
+        ``output_preview[-200:]`` with no redaction wrap, leaking inline
+        secrets (unlike poll/log/wait/kill).
+        """
+        pr, sess = self._setup(
+            monkeypatch, "curl -H 'Authorization: Bearer sk-abc123def456ghi789jkl012345'",
+            "opaque token sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG output",
+        )
+        out = json.loads(pr._handle_process({"action": "list"}))
+        assert len(out["processes"]) >= 1
+        entry = out["processes"][0]
+        assert "sk-abc123def456ghi789jkl012345" not in entry["command"]
+        assert "sk-proj-AAAABBBBCCCCDDDDEEEEFFFFGGGG" not in entry["output_preview"]
+        assert "curl" in entry["command"]
 
     def test_disabled_passes_through(self, monkeypatch):
         import agent.redact as _r

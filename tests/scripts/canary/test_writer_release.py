@@ -8,6 +8,7 @@ import stat
 import subprocess
 import sys
 import tomllib
+from contextlib import nullcontext
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ from types import SimpleNamespace
 import pytest
 
 from gateway import canonical_writer_foundation
+from gateway.canonical_boot_identity import SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE
 from scripts.canary import writer_release
 from scripts.canary.writer_release import (
     GATEWAY_MODULE,
@@ -83,10 +85,15 @@ def test_writer_release_import_is_stdlib_only_before_venv_exists() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _tmp_path_uses_process_primary_group(tmp_path):
+def _tmp_path_uses_process_primary_group(tmp_path, monkeypatch):
     """Keep BSD tmp-path group inheritance aligned with the test process."""
 
     os.chown(tmp_path, -1, os.getgid())
+    monkeypatch.setattr(
+        writer_release,
+        "host_release_lifecycle_lock",
+        lambda: nullcontext(),
+    )
 
 
 def _spec(tmp_path: Path) -> ReleaseBuildSpec:
@@ -177,6 +184,8 @@ def _write_schema_reconciliation_modules(spec: ReleaseBuildSpec) -> None:
         spec.schema_reconciliation_runtime_module_origin,
         spec.schema_reconciliation_control_module_origin,
         spec.schema_reconciliation_control_bootstrap_module_origin,
+        spec.schema_upgrade_module_origin,
+        spec.schema_upgrade_runtime_module_origin,
     )
     for module_path in module_paths:
         module_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1339,6 +1348,8 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
         spec.schema_reconciliation_runtime_module_origin,
         spec.schema_reconciliation_control_module_origin,
         spec.schema_reconciliation_control_bootstrap_module_origin,
+        spec.schema_upgrade_module_origin,
+        spec.schema_upgrade_runtime_module_origin,
     ):
         module_entry = next(
             entry
@@ -1728,6 +1739,8 @@ def test_installed_runtime_requires_packaged_canonical_writer_foundation(
         "schema_reconciliation_runtime_module_origin",
         "schema_reconciliation_control_module_origin",
         "schema_reconciliation_control_bootstrap_module_origin",
+        "schema_upgrade_module_origin",
+        "schema_upgrade_runtime_module_origin",
     ),
 )
 @pytest.mark.parametrize("mutation", ("missing", "symlink", "mode", "empty"))
@@ -1981,6 +1994,7 @@ def test_hardened_writer_only_units_pin_identity_config_and_readiness():
         in bundle.writer_service
     )
     assert "Type=oneshot" in bundle.exporter_service
+    assert "RemainAfterExit=yes" in bundle.exporter_service
     assert "[Install]" not in bundle.exporter_service
     assert ".timer" not in bundle.exporter_service
     assert "SupplementaryGroups=muncho-projector" in bundle.exporter_service
@@ -1999,12 +2013,15 @@ def test_hardened_writer_only_units_pin_identity_config_and_readiness():
     for rendered in (bundle.writer_service, bundle.gateway_service):
         assert "EnvironmentFile=" not in rendered
         assert "PassEnvironment=" not in rendered
-        assert "LoadCredential=" not in rendered
+        assert rendered.count(f"{SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE}\n") == 1
+        assert rendered.count("LoadCredential=") == 1
         assert "/bin/sh" not in rendered
         assert "discord" not in rendered.casefold()
         assert "openai" not in rendered.casefold()
         assert "api_key" not in rendered.casefold()
         assert "token" not in rendered.casefold()
+    assert "LoadCredential=" not in bundle.phase_b_readiness_service
+    assert "LoadCredential=" not in bundle.exporter_service
 
 
 def test_unit_spec_rejects_config_inside_mutable_gateway_home():

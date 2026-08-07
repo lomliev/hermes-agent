@@ -111,7 +111,8 @@ def test_install_has_exact_bootstrap_and_runtime_principal_separation() -> None:
     assert "^muncho_canary_control_[0-9a-f]{16}$" in sql
     assert sql.count("^muncho_canary_reconciler_[0-9a-f]{16}$") == 3
     assert "grantor_name = 'cloudsqladmin'" in sql
-    assert "granted_name = 'cloudsqlsuperuser'" in sql
+    assert "'canonical_brain_migration_owner',\n" in sql
+    assert "'cloudsqlsuperuser'" in sql
     assert "admin_option IS FALSE" in sql
     assert "inherit_option IS TRUE" in sql
     assert "set_option IS TRUE" in sql
@@ -119,6 +120,9 @@ def test_install_has_exact_bootstrap_and_runtime_principal_separation() -> None:
     assert "membership.admin_option IS TRUE" in sql
     assert "membership.inherit_option IS FALSE" in sql
     assert "membership.set_option IS FALSE" in sql
+    assert sql.count("SELECT pg_catalog.count(*) = 0\n                  OR (") == 1
+    assert sql.count("SELECT pg_catalog.count(*) = 0\n                       OR (") == 1
+    assert "only those two provider-safe shapes" in sql
     assert "SET LOCAL ROLE cloudsqlsuperuser;" in sql
     assert "SET LOCAL ROLE canonical_brain_migration_owner;" not in sql
     assert "GRANT canonical_brain_migration_owner TO SESSION_USER" not in sql
@@ -136,7 +140,7 @@ def test_install_has_exact_bootstrap_and_runtime_principal_separation() -> None:
     )
 
 
-def test_install_accepts_only_the_exact_provider_managed_role_closure() -> None:
+def test_install_accepts_only_the_exact_dual_authority_role_closure() -> None:
     sql = _text(INSTALL)
 
     assert sql.count("provider_forward_role_closure(roleid) AS") == 1
@@ -144,17 +148,70 @@ def test_install_accepts_only_the_exact_provider_managed_role_closure() -> None:
     assert (
         "SELECT roleid FROM forward_role_closure\n"
         "                   EXCEPT\n"
-        "                   SELECT roleid FROM provider_forward_role_closure"
+        "                   SELECT roleid FROM expected_forward_role_closure"
     ) in sql
     assert (
-        "SELECT roleid FROM provider_forward_role_closure\n"
+        "SELECT roleid FROM expected_forward_role_closure\n"
         "                   EXCEPT\n"
         "                   SELECT roleid FROM forward_role_closure"
     ) in sql
     assert "pg_catalog.count(DISTINCT role.rolname) = 1" not in sql
 
 
-def test_retire_accepts_only_the_exact_provider_managed_role_closure() -> None:
+def test_install_terminal_failure_emits_named_non_secret_structural_facts() -> None:
+    sql = _text(INSTALL)
+    marker = "schema reconciliation control terminal diagnostics: %"
+
+    assert sql.count(marker) == 1
+    assert sql.count("terminal_diagnostics jsonb;") == 1
+    assert sql.count("SELECT pg_catalog.jsonb_build_object(") == 1
+    assert sql.count("RAISE WARNING\n            '" + marker + "',") == 1
+    assert sql.index("RAISE WARNING\n            '" + marker) < sql.index(
+        "RAISE EXCEPTION "
+        "'schema reconciliation control bootstrap terminal failed'"
+    )
+
+    # Facts identify every family in the unchanged fail-closed terminal gate.
+    for fact in (
+        "session_identity_exact",
+        "executor_attributes_exact",
+        "migration_owner_attributes_exact",
+        "database_owner_exact",
+        "executor_control_membership_exact",
+        "migration_owner_control_membership_exact",
+        "executor_owned_dependencies",
+        "executor_acl_dependencies_exact",
+        "executor_non_acl_dependencies",
+        "control_schema_owner_exact",
+        "executor_schema_create",
+        "executor_schema_usage",
+        "executor_database_connect",
+        "executor_database_create",
+        "executor_database_temporary",
+        "executor_database_acl_exact",
+        "connectable_database_count",
+        "allowconn_database_count",
+        "managed_cloudsqladmin_database_exact",
+        "executor_unexpected_database_scope_count",
+        "control_routine_count",
+        "control_routine_contract_drift_count",
+        "unexpected_helper_count",
+    ):
+        assert sql.count("'" + fact + "'") == 1
+
+    diagnostic = sql[sql.index("SELECT pg_catalog.jsonb_build_object(") :]
+    for forbidden in (
+        "password",
+        "token",
+        "secret",
+        "credential",
+        "canonical_event_log",
+        "payload",
+    ):
+        assert forbidden not in diagnostic.lower()
+
+
+def test_retire_accepts_only_the_exact_dual_authority_role_closure() -> None:
     sql = _text(RETIRE)
 
     assert sql.count("provider_forward_role_closure(roleid) AS") == 1
@@ -162,10 +219,10 @@ def test_retire_accepts_only_the_exact_provider_managed_role_closure() -> None:
     assert (
         "SELECT roleid FROM forward_role_closure\n"
         "                   EXCEPT\n"
-        "                   SELECT roleid FROM provider_forward_role_closure"
+        "                   SELECT roleid FROM expected_forward_role_closure"
     ) in sql
     assert (
-        "SELECT roleid FROM provider_forward_role_closure\n"
+        "SELECT roleid FROM expected_forward_role_closure\n"
         "                   EXCEPT\n"
         "                   SELECT roleid FROM forward_role_closure"
     ) in sql
@@ -202,7 +259,7 @@ def test_retire_is_exact_drift_intolerant_and_non_cascading() -> None:
     assert "DROP FUNCTION canonical_brain._discord" not in sql
     assert "SET LOCAL ROLE cloudsqlsuperuser;" in sql
     assert "CURRENT_USER <> 'cloudsqlsuperuser'" in sql
-    assert "SET LOCAL ROLE canonical_brain_migration_owner;" not in sql
+    assert "SET LOCAL ROLE canonical_brain_migration_owner;" in sql
     assert "GRANT canonical_brain_migration_owner TO SESSION_USER" not in sql
     assert "REVOKE canonical_brain_migration_owner FROM SESSION_USER" not in sql
 

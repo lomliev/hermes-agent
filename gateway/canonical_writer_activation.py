@@ -19,6 +19,7 @@ import os
 import grp
 import pwd
 import ipaddress
+import math
 import re
 import stat
 import subprocess
@@ -30,6 +31,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Mapping, Sequence
 
+from gateway.canonical_boot_identity import SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE
 from gateway.canonical_writer_root_collector import (
     DEFAULT_ROOT_EVIDENCE_ROOT,
     TrustedDeploymentManifest,
@@ -49,6 +51,7 @@ from gateway.canonical_writer_host_authority import (
     NativeObservationPlan,
     NativeObservationReceipt,
     NATIVE_OBSERVATION_STAGE_SCHEMA,
+    NATIVE_OBSERVATION_PLAN_SCHEMA,
     OWNER_APPROVAL_RECEIPT_SCHEMA,
     OwnerApprovalReceipt,
     current_host_identity_sha256,
@@ -57,10 +60,45 @@ from gateway.canonical_writer_host_authority import (
     owner_approval_receipt_path,
     write_native_observation_stage,
 )
+from gateway.canonical_writer_host_identity import (
+    CANARY_GATEWAY_GID,
+    CANARY_GATEWAY_UID,
+    CANARY_PROJECTOR_GID,
+    CANARY_PROJECTOR_UID,
+    CANARY_SOCKET_CLIENT_GID,
+    CANARY_WRITER_GID,
+    CANARY_WRITER_UID,
+    GATEWAY_GROUP,
+    GATEWAY_HOME,
+    GATEWAY_USER,
+    NOLOGIN_SHELL,
+    PROJECTOR_GROUP,
+    PROJECTOR_USER,
+    SOCKET_CLIENT_GROUP,
+    WRITER_GROUP,
+    WRITER_USER,
+    _effective_gid_members,
+    _host_identities_are_exact,
+    _host_identity_snapshot,
+    _lookup_gid,
+    _lookup_group,
+    _lookup_user,
+    _supplementary_gids,
+)
 from gateway.canonical_projection_export import (
     ProjectionExportError,
     projection_provenance_sha256,
     validate_projection_export,
+)
+from gateway.canonical_writer_release_contract import MAX_RELEASE_FILE_BYTES
+from gateway.canonical_writer_pre_phase_b_start import (
+    DEFAULT_PRE_PHASE_B_START_PERMIT_PATH,
+    build_pre_phase_b_start_permit,
+    canonical_pre_phase_b_start_permit_bytes,
+)
+from gateway.canonical_writer_lifecycle_lock import (
+    HOST_LIFECYCLE_LOCK_PATH,
+    host_release_lifecycle_lock,
 )
 
 
@@ -70,7 +108,7 @@ ACTIVATION_FAILURE_SCHEMA = "muncho-writer-only-activation-failure.v1"
 OWNER_APPROVAL_SCHEMA = OWNER_APPROVAL_RECEIPT_SCHEMA
 SYSTEMD_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v3"
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
-NATIVE_OBSERVATION_SCHEMA = "muncho-writer-native-observation.v1"
+NATIVE_OBSERVATION_SCHEMA = "muncho-writer-native-observation.v2"
 NATIVE_READ_ONLY_PREFLIGHT_SCHEMA = (
     "muncho-writer-native-read-only-preflight.v2"
 )
@@ -82,26 +120,12 @@ EXPORTER_UNIT = "muncho-canonical-writer-export.service"
 DISCORD_UNIT = "muncho-discord-egress.service"
 ROOT_COLLECTOR_MODULE = "gateway.canonical_writer_root_collector"
 
-GATEWAY_USER = "muncho-gateway"
-GATEWAY_GROUP = "muncho-gateway"
-WRITER_USER = "muncho-canonical-writer"
-WRITER_GROUP = "muncho-canonical-writer"
-SOCKET_CLIENT_GROUP = "muncho-writer-client"
-PROJECTOR_GROUP = "muncho-projector"
-NOLOGIN_SHELL = "/usr/sbin/nologin"
-GATEWAY_HOME = "/var/lib/hermes-gateway"
 GROUPADD = "/usr/sbin/groupadd"
 USERMOD = "/usr/sbin/usermod"
 
-CANARY_GATEWAY_UID = 993
-CANARY_GATEWAY_GID = 992
-CANARY_WRITER_UID = 999
-CANARY_WRITER_GID = 994
-CANARY_SOCKET_CLIENT_GID = 990
-CANARY_PROJECTOR_GID = 991
-CANARY_PROJECTOR_UID = 992
-PROJECTOR_USER = "muncho-projector"
-ACTIVATION_LOCK_PATH = Path("/run/muncho-writer-activation.lock")
+ACTIVATION_LOCK_PATH = HOST_LIFECYCLE_LOCK_PATH
+HOST_IDENTITY_CONVERGENCE_ATTEMPTS = 10
+HOST_IDENTITY_CONVERGENCE_DELAY_SECONDS = 0.1
 
 DEFAULT_PLAN_PATH = Path("/etc/muncho/writer-activation/activation-plan.json")
 DEFAULT_STAGED_PLAN_PATH = Path(
@@ -161,6 +185,12 @@ DEFAULT_EXTERNAL_IAM_RECEIPT_PATH = DEFAULT_EXTERNAL_IAM_LIVE_PATH
 
 SYSTEMCTL = "/usr/bin/systemctl"
 SYSTEMD_ANALYZE = "/usr/bin/systemd-analyze"
+PRE_PHASE_B_WRITER_START_ARGV = (
+    SYSTEMCTL,
+    "start",
+    "--job-mode=ignore-dependencies",
+    WRITER_UNIT,
+)
 SYSTEMD_TMPFILES = "/usr/bin/systemd-tmpfiles"
 JOURNALCTL = "/usr/bin/journalctl"
 
@@ -170,9 +200,9 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _MAX_PLAN_BYTES = 4 * 1024 * 1024
 _MAX_MANIFEST_BYTES = 8 * 1024 * 1024
 _MAX_CONFIG_BYTES = 2 * 1024 * 1024
-_MAX_RELEASE_FILE_BYTES = 128 * 1024 * 1024
 _MAX_COMMAND_OUTPUT_BYTES = 1024 * 1024
 _MAX_EXPORT_BYTES = 256 * 1024 * 1024
+_MAX_NATIVE_MAPPING_BYTES = 1024 * 1024 * 1024
 _COMMAND_TIMEOUT_SECONDS = 360
 
 
@@ -292,55 +322,8 @@ def _require_root_linux() -> None:
 @contextmanager
 def _host_activation_lock():
     """Serialize every identity/systemd/evidence lifecycle on this host."""
-
-    _require_root_linux()
-    _validate_root_parent_chain(ACTIVATION_LOCK_PATH.parent)
-    base_flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0)
-    if hasattr(os, "O_NOFOLLOW"):
-        base_flags |= os.O_NOFOLLOW
-    created = False
-    try:
-        descriptor = os.open(
-            ACTIVATION_LOCK_PATH,
-            base_flags | os.O_CREAT | os.O_EXCL,
-            0o600,
-        )
-        created = True
-    except FileExistsError:
-        descriptor = os.open(ACTIVATION_LOCK_PATH, base_flags)
-    try:
-        if created:
-            os.fchown(descriptor, 0, 0)
-            os.fchmod(descriptor, 0o600)
-            os.fsync(descriptor)
-            _fsync_directory(ACTIVATION_LOCK_PATH.parent)
-        item = os.fstat(descriptor)
-        reached = os.lstat(ACTIVATION_LOCK_PATH)
-        if (
-            not stat.S_ISREG(item.st_mode)
-            or item.st_nlink != 1
-            or item.st_uid != 0
-            or item.st_gid != 0
-            or stat.S_IMODE(item.st_mode) != 0o600
-            or (item.st_dev, item.st_ino) != (reached.st_dev, reached.st_ino)
-            or _list_xattrs(ACTIVATION_LOCK_PATH)
-        ):
-            raise PermissionError("activation lock identity is invalid")
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RuntimeError(
-                "another writer activation lifecycle is running"
-            ) from exc
-        # Internal callers that compose more than one activation primitive
-        # need the exact open file description, not a second open of the same
-        # path.  Existing callers deliberately ignore the yielded value.
+    with host_release_lifecycle_lock(ACTIVATION_LOCK_PATH) as descriptor:
         yield descriptor
-    finally:
-        try:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
-        finally:
-            os.close(descriptor)
 
 
 def _validate_root_parent_chain(
@@ -366,6 +349,27 @@ def _validate_root_parent_chain(
         if current == current.parent:
             return
         current = current.parent
+
+
+def _validate_existing_root_ancestor_chain(path: Path) -> None:
+    """Validate the nearest existing ancestor without creating ``path``.
+
+    Stopped native preflight deliberately runs before live config directories
+    exist.  Missing descendants therefore carry no authority yet; the first
+    existing ancestor must still be an exact root-controlled directory.  The
+    later install path creates every missing component through
+    ``_ensure_root_directory`` and revalidates the complete parent chain.
+    """
+
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("activation parent path is invalid")
+    current = path
+    while not os.path.lexists(current):
+        parent = current.parent
+        if parent == current:
+            raise ValueError("activation parent path is unavailable")
+        current = parent
+    _validate_root_parent_chain(current)
 
 
 def _list_xattrs(path: Path) -> tuple[str, ...]:
@@ -876,8 +880,10 @@ class SystemdBundle:
         digest = _digest(raw["sha256"], "systemd bundle sha256")
         if _sha256_json(unsigned) != digest:
             raise ValueError("systemd bundle self-digest is invalid")
-        forbidden = re.compile(
-            r"(?im)^(?:EnvironmentFile|PassEnvironment|LoadCredential)="
+        forbidden = re.compile(r"(?im)^(?:EnvironmentFile|PassEnvironment)=")
+        load_credential = re.compile(r"(?m)^LoadCredential=(.+)$")
+        expected_boot_credential = (
+            SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE.removeprefix("LoadCredential=")
         )
         if any(
             forbidden.search(raw[name])
@@ -887,6 +893,13 @@ class SystemdBundle:
                 "gateway_service",
                 "exporter_service",
             )
+        ) or (
+            load_credential.findall(raw["writer_service"])
+            != [expected_boot_credential]
+            or load_credential.findall(raw["gateway_service"])
+            != [expected_boot_credential]
+            or load_credential.findall(raw["phase_b_readiness_service"])
+            or load_credential.findall(raw["exporter_service"])
         ):
             raise ValueError("systemd bundle contains credential injection")
         if (
@@ -1755,174 +1768,33 @@ def _exporter_stdout_receipt(
     return value
 
 
-def _lookup_group(name: str) -> grp.struct_group | None:
-    try:
-        return grp.getgrnam(name)
-    except KeyError:
-        return None
+def _wait_for_exact_host_identities(
+    *,
+    snapshotter: Callable[[], dict[str, Any]] | None = None,
+    sleeper: Callable[[float], None] = time.sleep,
+    attempts: int = HOST_IDENTITY_CONVERGENCE_ATTEMPTS,
+    delay_seconds: float = HOST_IDENTITY_CONVERGENCE_DELAY_SECONDS,
+) -> dict[str, Any]:
+    """Bound NSS convergence while preserving the exact identity predicate."""
 
-
-def _lookup_gid(gid: int) -> grp.struct_group | None:
-    try:
-        return grp.getgrgid(gid)
-    except KeyError:
-        return None
-
-
-def _lookup_user(name: str) -> pwd.struct_passwd:
-    try:
-        return pwd.getpwnam(name)
-    except KeyError as exc:
-        raise RuntimeError(f"required host user is absent: {name}") from exc
-
-
-def _supplementary_gids(name: str, primary_gid: int) -> tuple[int, ...]:
-    values = os.getgrouplist(name, primary_gid)
-    if any(type(value) is not int or value < 0 for value in values):
-        raise RuntimeError("host group membership is invalid")
-    return tuple(sorted(set(values)))
-
-
-def _host_identity_snapshot() -> dict[str, Any]:
-    gateway = _lookup_user(GATEWAY_USER)
-    writer = _lookup_user(WRITER_USER)
-    projector = _lookup_user(PROJECTOR_USER)
-    groups: dict[str, Mapping[str, Any]] = {}
-    for name in (
-        GATEWAY_GROUP,
-        WRITER_GROUP,
-        SOCKET_CLIENT_GROUP,
-        PROJECTOR_GROUP,
+    if type(attempts) is not int or attempts < 1:
+        raise ValueError("host identity convergence attempts are invalid")
+    if (
+        type(delay_seconds) not in {int, float}
+        or not math.isfinite(float(delay_seconds))
+        or delay_seconds < 0
     ):
-        group = _lookup_group(name)
-        if group is None:
-            continue
-        groups[name] = {
-            "gid": group.gr_gid,
-            "members": sorted(set(group.gr_mem)),
-        }
-    return {
-        "gateway": {
-            "name": gateway.pw_name,
-            "uid": gateway.pw_uid,
-            "gid": gateway.pw_gid,
-            "home": gateway.pw_dir,
-            "shell": gateway.pw_shell,
-            "groups": list(_supplementary_gids(GATEWAY_USER, gateway.pw_gid)),
-        },
-        "writer": {
-            "name": writer.pw_name,
-            "uid": writer.pw_uid,
-            "gid": writer.pw_gid,
-            "home": writer.pw_dir,
-            "shell": writer.pw_shell,
-            "groups": list(_supplementary_gids(WRITER_USER, writer.pw_gid)),
-        },
-        "projector": {
-            "name": projector.pw_name,
-            "uid": projector.pw_uid,
-            "gid": projector.pw_gid,
-            "home": projector.pw_dir,
-            "shell": projector.pw_shell,
-            "groups": list(_supplementary_gids(PROJECTOR_USER, projector.pw_gid)),
-        },
-        "groups": groups,
-        "effective_gid_members": _effective_gid_members((
-            CANARY_SOCKET_CLIENT_GID,
-            CANARY_PROJECTOR_GID,
-            CANARY_GATEWAY_GID,
-            CANARY_WRITER_GID,
-        )),
-    }
-
-
-def _effective_gid_members(gids: Sequence[int]) -> dict[str, list[str]]:
-    targets = set(gids)
-    if len(targets) != len(tuple(gids)):
-        raise ValueError("effective group targets are not unique")
-    accounts = tuple(pwd.getpwall())
-    groups = tuple(grp.getgrall())
-    if len({item.pw_name for item in accounts}) != len(accounts) or len({
-        item.pw_uid for item in accounts
-    }) != len(accounts):
-        raise RuntimeError("NSS passwd identities are ambiguous")
-    for name in (
-        GATEWAY_GROUP,
-        WRITER_GROUP,
-        SOCKET_CLIENT_GROUP,
-        PROJECTOR_GROUP,
-    ):
-        if sum(item.gr_name == name for item in groups) > 1:
-            raise RuntimeError("NSS pinned group name is ambiguous")
-    for gid in targets:
-        names = [item.gr_name for item in groups if item.gr_gid == gid]
-        if len(names) > 1:
-            raise RuntimeError("NSS group GID identity is ambiguous")
-    result: dict[str, list[str]] = {}
-    for gid in sorted(targets):
-        members = {item.pw_name for item in accounts if item.pw_gid == gid}
-        for group in groups:
-            if group.gr_gid == gid:
-                members.update(group.gr_mem)
-        unknown = members - {item.pw_name for item in accounts}
-        if unknown:
-            raise RuntimeError("NSS group contains an unknown account")
-        result[str(gid)] = sorted(members)
-    return result
-
-
-def _host_identities_are_exact(snapshot: Mapping[str, Any]) -> bool:
-    gateway = snapshot.get("gateway")
-    writer = snapshot.get("writer")
-    projector = snapshot.get("projector")
-    groups = snapshot.get("groups")
-    effective = snapshot.get("effective_gid_members")
-    return bool(
-        isinstance(gateway, Mapping)
-        and isinstance(writer, Mapping)
-        and isinstance(projector, Mapping)
-        and isinstance(groups, Mapping)
-        and isinstance(effective, Mapping)
-        and gateway
-        == {
-            "name": GATEWAY_USER,
-            "uid": CANARY_GATEWAY_UID,
-            "gid": CANARY_GATEWAY_GID,
-            "home": GATEWAY_HOME,
-            "shell": NOLOGIN_SHELL,
-            "groups": [CANARY_SOCKET_CLIENT_GID, CANARY_GATEWAY_GID],
-        }
-        and writer.get("name") == WRITER_USER
-        and writer.get("uid") == CANARY_WRITER_UID
-        and writer.get("gid") == CANARY_WRITER_GID
-        and writer.get("home") == "/nonexistent"
-        and writer.get("shell") == NOLOGIN_SHELL
-        and writer.get("groups") == [CANARY_SOCKET_CLIENT_GID + 1, CANARY_WRITER_GID]
-        and projector
-        == {
-            "name": PROJECTOR_USER,
-            "uid": CANARY_PROJECTOR_UID,
-            "gid": CANARY_PROJECTOR_GID,
-            "home": "/nonexistent",
-            "shell": NOLOGIN_SHELL,
-            "groups": [CANARY_PROJECTOR_GID],
-        }
-        and groups.get(GATEWAY_GROUP, {}).get("gid") == CANARY_GATEWAY_GID
-        and groups.get(GATEWAY_GROUP, {}).get("members") == []
-        and groups.get(WRITER_GROUP, {}).get("gid") == CANARY_WRITER_GID
-        and groups.get(WRITER_GROUP, {}).get("members") == []
-        and groups.get(SOCKET_CLIENT_GROUP)
-        == {"gid": CANARY_SOCKET_CLIENT_GID, "members": [GATEWAY_USER]}
-        and groups.get(PROJECTOR_GROUP, {}).get("gid") == CANARY_PROJECTOR_GID
-        and groups.get(PROJECTOR_GROUP, {}).get("members") == [WRITER_USER]
-        and effective
-        == {
-            str(CANARY_SOCKET_CLIENT_GID): [GATEWAY_USER],
-            str(CANARY_PROJECTOR_GID): [PROJECTOR_USER, WRITER_USER],
-            str(CANARY_GATEWAY_GID): [GATEWAY_USER],
-            str(CANARY_WRITER_GID): [WRITER_USER],
-        }
-    )
+        raise ValueError("host identity convergence delay is invalid")
+    if snapshotter is None:
+        snapshotter = _host_identity_snapshot
+    latest: dict[str, Any] = {}
+    for attempt in range(attempts):
+        latest = snapshotter()
+        if _host_identities_are_exact(latest):
+            return latest
+        if attempt + 1 < attempts:
+            sleeper(float(delay_seconds))
+    raise RuntimeError("canary host identity reconciliation did not converge")
 
 
 def prepare_canary_host_identities(
@@ -2074,9 +1946,7 @@ def prepare_canary_host_identities(
         runner=runner,
         label="reconcile exact writer identity",
     )
-    after = _host_identity_snapshot()
-    if not _host_identities_are_exact(after):
-        raise RuntimeError("canary host identity reconciliation did not converge")
+    after = _wait_for_exact_host_identities()
     return {"changed": True, "before": before, "after": after}
 
 
@@ -2215,6 +2085,91 @@ def _unlink_exact(
         raise RuntimeError("activation refuses to remove drifted evidence")
     path.unlink()
     _fsync_directory(path.parent)
+
+
+def _pre_phase_b_native_plan(
+    plan: NativeObservationPlan | ActivationPlan,
+) -> NativeObservationPlan:
+    if isinstance(plan, NativeObservationPlan):
+        return NativeObservationPlan.from_mapping(plan.to_mapping())
+    if isinstance(plan, ActivationPlan):
+        native = NativeObservationPlan.from_mapping(
+            plan.native_observation_receipt["plan"]
+        )
+        if native.value["revision"] != plan.revision:
+            raise RuntimeError("pre-Phase-B permit release binding drifted")
+        return native
+    raise TypeError("pre-Phase-B permit requires an exact activation plan")
+
+
+def _install_pre_phase_b_start_permit(
+    plan: NativeObservationPlan | ActivationPlan,
+    *,
+    owner_approval_receipt: OwnerApprovalReceipt,
+    external_iam_receipt: ExternalIAMReceipt,
+) -> tuple[str, int]:
+    """Publish one exact short-lived writer-readable permit under the host lock."""
+
+    native = _pre_phase_b_native_plan(plan)
+    scope = "native_observation" if isinstance(plan, NativeObservationPlan) else "activation"
+    if owner_approval_receipt.value.get("scope") != scope:
+        raise PermissionError("pre-Phase-B permit owner scope is invalid")
+    identities = native.value["identities"]
+    writer_config = native.value["writer_config"]
+    permit = build_pre_phase_b_start_permit(
+        revision=str(native.value["revision"]),
+        artifact_root=str(native.value["artifact_root"]),
+        artifact_sha256=str(native.value["artifact_sha256"]),
+        release_manifest_file_sha256=str(
+            native.value["release_manifest_file_sha256"]
+        ),
+        writer_config_path=str(writer_config["path"]),
+        writer_config_sha256=str(writer_config["sha256"]),
+        writer_uid=int(identities["writer_uid"]),
+        writer_gid=int(identities["writer_gid"]),
+        boot_id_sha256=str(native.value["boot_id_sha256"]),
+        scope=scope,
+        plan_sha256=plan.sha256,
+        owner_approval_receipt_sha256=owner_approval_receipt.sha256,
+        owner_approval_expires_at_unix=int(
+            owner_approval_receipt.value["expires_at_unix"]
+        ),
+        external_iam_receipt_sha256=external_iam_receipt.sha256,
+    )
+    payload = canonical_pre_phase_b_start_permit_bytes(permit)
+    writer_gid = int(identities["writer_gid"])
+    # A process killed outside the sealed finally block may leave only this
+    # dedicated root-owned path.  The host activation lock excludes a live
+    # concurrent lifecycle, so a trusted prior file is safe to replace here.
+    _unlink_exact(
+        DEFAULT_PRE_PHASE_B_START_PERMIT_PATH,
+        uid=0,
+        gid=writer_gid,
+        mode=0o440,
+    )
+    _install_exact_bytes(
+        DEFAULT_PRE_PHASE_B_START_PERMIT_PATH,
+        payload,
+        uid=0,
+        gid=writer_gid,
+        mode=0o440,
+    )
+    return _sha256_bytes(payload), writer_gid
+
+
+def _remove_pre_phase_b_start_permit(
+    *,
+    file_sha256: str,
+    writer_gid: int,
+) -> None:
+    _digest(file_sha256, "pre-Phase-B permit file sha256")
+    _unlink_exact(
+        DEFAULT_PRE_PHASE_B_START_PERMIT_PATH,
+        uid=0,
+        gid=writer_gid,
+        mode=0o440,
+        sha256=file_sha256,
+    )
 
 
 def _external_iam_archive_path(receipt: ExternalIAMReceipt) -> Path:
@@ -2444,13 +2399,18 @@ def _native_artifact_contract(
     plan: NativeObservationPlan,
 ) -> Mapping[str, InstallArtifact]:
     value = plan.value
+    if value.get("schema") != NATIVE_OBSERVATION_PLAN_SCHEMA:
+        raise ValueError("legacy native observation plan is recovery-only")
     writer_unit = value["writer_unit"]
+    readiness_unit = value["phase_b_readiness_unit"]
     gateway_unit = value["gateway_unit"]
     writer_config = value["writer_config"]
     gateway_config = value["gateway_config"]
     exact = (
         writer_unit["name"] == WRITER_UNIT
         and writer_unit["path"] == str(DEFAULT_WRITER_UNIT_PATH)
+        and readiness_unit["name"] == PHASE_B_READINESS_UNIT
+        and readiness_unit["path"] == str(DEFAULT_PHASE_B_READINESS_UNIT_PATH)
         and gateway_unit["name"] == GATEWAY_UNIT
         and gateway_unit["path"] == str(DEFAULT_GATEWAY_UNIT_PATH)
         and writer_config["path"] == str(DEFAULT_WRITER_CONFIG_PATH)
@@ -2472,6 +2432,15 @@ def _native_artifact_contract(
             source_path=DEFAULT_STAGED_GATEWAY_UNIT_PATH,
             target_path=DEFAULT_GATEWAY_UNIT_PATH,
             sha256=gateway_unit["sha256"],
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=256 * 1024,
+        ),
+        "phase_b_readiness_unit": InstallArtifact(
+            source_path=DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
+            target_path=DEFAULT_PHASE_B_READINESS_UNIT_PATH,
+            sha256=readiness_unit["sha256"],
             mode=0o644,
             uid=0,
             gid=0,
@@ -2504,10 +2473,16 @@ def _install_native_observation_artifacts(
     artifacts = _native_artifact_contract(plan)
     created: list[Path] = []
     try:
+        for parent in sorted(
+            {artifact.target_path.parent for artifact in artifacts.values()},
+            key=str,
+        ):
+            _ensure_root_directory(parent, mode=0o755)
         for name in (
             "writer_config",
             "gateway_config",
             "writer_unit",
+            "phase_b_readiness_unit",
             "gateway_unit",
         ):
             artifact = artifacts[name]
@@ -2552,6 +2527,39 @@ def _install_native_observation_artifacts(
                 [install_error, *rollback],
             ) from None
         raise
+
+
+def _rollback_native_observation_artifacts(
+    plan: NativeObservationPlan,
+    created: Sequence[Path],
+    *,
+    runner: Runner,
+) -> None:
+    artifacts = _native_artifact_contract(plan)
+    by_path = {item.target_path: item for item in artifacts.values()}
+    rollback: list[BaseException] = []
+    for path in reversed(created):
+        artifact = by_path[path]
+        try:
+            _unlink_exact(
+                path,
+                uid=artifact.uid,
+                gid=artifact.gid,
+                mode=artifact.mode,
+                sha256=artifact.sha256,
+            )
+        except BaseException as exc:
+            rollback.append(exc)
+    try:
+        _run(
+            Command((SYSTEMCTL, "daemon-reload"), timeout_seconds=60),
+            runner=runner,
+            label="native rollback daemon reload",
+        )
+    except BaseException as exc:
+        rollback.append(exc)
+    if rollback:
+        raise ExceptionGroup("native observation artifact rollback failed", rollback)
 
 
 def _ensure_runtime_directory(
@@ -2684,9 +2692,12 @@ def _verify_native_preflight_inputs(
     runner: Runner,
     require_installed: bool,
     require_original_boot: bool,
+    require_collector_fresh: bool,
 ) -> ConfigCollectorReceipt:
     """Perform all bounded host reads before the native lifecycle mutates state."""
 
+    if type(require_collector_fresh) is not bool:
+        raise TypeError("native collector freshness requirement must be boolean")
     if (
         require_original_boot
         and _current_boot_id_sha256() != plan.value["boot_id_sha256"]
@@ -2694,11 +2705,17 @@ def _verify_native_preflight_inputs(
         raise RuntimeError("native observation boot identity drifted")
     if current_host_identity_sha256() != plan.value["host_identity_sha256"]:
         raise RuntimeError("native observation host identity drifted")
+    # Publication proves the collector snapshot was fresh when the immutable
+    # plan was sealed.  Activation may happen after the snapshot's five-minute
+    # window because owner/auth checks are deliberately performed out of band.
+    # In that path the collector is only a static binding: the database check
+    # below performs a new managed-HBA probe and privilege attestation before
+    # any host or service mutation.
     collector_receipt = None
     if not require_installed:
         collector_receipt = _load_bound_config_collector_receipt(
             plan,
-            require_fresh=True,
+            require_fresh=require_collector_fresh,
         )
     _verify_native_release(plan)
     artifacts = _native_artifact_contract(plan)
@@ -2727,7 +2744,7 @@ def _verify_native_preflight_inputs(
         elif require_installed:
             raise RuntimeError(f"native {name} installed artifact is absent")
         else:
-            _validate_root_parent_chain(artifact.target_path.parent)
+            _validate_existing_root_ancestor_chain(artifact.target_path.parent)
     database = plan.value["database"]
     ca_path = Path(database["ca_path"])
     if ca_path != DEFAULT_DATABASE_CA_PATH:
@@ -2767,7 +2784,7 @@ def _verify_native_preflight_inputs(
         raise RuntimeError("native legacy helper authority must remain absent")
     final_collector_receipt = _load_bound_config_collector_receipt(
         plan,
-        require_fresh=not require_installed,
+        require_fresh=require_collector_fresh,
     )
     if (
         collector_receipt is None
@@ -2800,6 +2817,7 @@ def native_observation_read_only_preflight(
         runner=runner,
         require_installed=False,
         require_original_boot=True,
+        require_collector_fresh=True,
     )
     observed_at_unix = int(_clock())
     if observed_at_unix < 0:
@@ -3058,6 +3076,7 @@ def _load_existing_native_receipt(
         runner=runner,
         require_installed=True,
         require_original_boot=False,
+        require_collector_fresh=False,
     )
     if not _host_identities_are_exact(_host_identity_snapshot()):
         raise RuntimeError("native receipt host identities drifted")
@@ -3173,7 +3192,7 @@ def _verify_release_tree(plan: ActivationPlan) -> None:
                 or not stat.S_ISREG(item.st_mode)
                 or item.st_nlink != 1
                 or type(entry["size"]) is not int
-                or not 0 <= entry["size"] <= _MAX_RELEASE_FILE_BYTES
+                or not 0 <= entry["size"] <= MAX_RELEASE_FILE_BYTES
                 or item.st_size != entry["size"]
             ):
                 raise RuntimeError("release file identity drifted")
@@ -3975,6 +3994,7 @@ class NativeObservationExecutor:
             raise PermissionError("native observation is blocked by quarantine")
 
         permanent_units_installed = False
+        installed_artifacts: tuple[Path, ...] = ()
         daemon_reloaded = False
         lifecycle_start_attempted = False
         host_mutation_attempted = False
@@ -4004,6 +4024,7 @@ class NativeObservationExecutor:
                     runner=self.runner,
                     require_installed=False,
                     require_original_boot=True,
+                    require_collector_fresh=False,
                 )
                 if os.path.lexists(_native_stage_path(self.plan)):
                     raise RuntimeError(
@@ -4081,7 +4102,7 @@ class NativeObservationExecutor:
                     scope="native_observation",
                     plan_sha256=self.plan.sha256,
                 )
-                _install_native_observation_artifacts(self.plan)
+                installed_artifacts = _install_native_observation_artifacts(self.plan)
                 permanent_units_installed = True
                 _prepare_native_runtime_directories()
                 self._command(
@@ -4089,6 +4110,7 @@ class NativeObservationExecutor:
                         SYSTEMD_ANALYZE,
                         "verify",
                         str(DEFAULT_WRITER_UNIT_PATH),
+                        str(DEFAULT_PHASE_B_READINESS_UNIT_PATH),
                         str(DEFAULT_GATEWAY_UNIT_PATH),
                     ),
                     "native systemd unit verification",
@@ -4121,10 +4143,31 @@ class NativeObservationExecutor:
                     plan_sha256=self.plan.sha256,
                 )
                 lifecycle_start_attempted = True
-                self._command(
-                    (SYSTEMCTL, "start", WRITER_UNIT), "native start writer", timeout=90
+                # Phase-B authority is derived from the completed activation
+                # receipt, so the durable readiness unit cannot run yet.  Use
+                # systemd's fixed single-job mode only inside this stopped,
+                # owner-approved observation lifecycle.  The installed writer
+                # unit keeps its hard Requires= readiness dependency for every
+                # ordinary/full-canary start.
+                permit_file_sha256, permit_writer_gid = (
+                    _install_pre_phase_b_start_permit(
+                        self.plan,
+                        owner_approval_receipt=owner_approval_receipt,
+                        external_iam_receipt=iam_receipt,
+                    )
                 )
-                _require_active(WRITER_UNIT, runner=self.runner)
+                try:
+                    self._command(
+                        PRE_PHASE_B_WRITER_START_ARGV,
+                        "native start writer",
+                        timeout=90,
+                    )
+                    _require_active(WRITER_UNIT, runner=self.runner)
+                finally:
+                    _remove_pre_phase_b_start_permit(
+                        file_sha256=permit_file_sha256,
+                        writer_gid=permit_writer_gid,
+                    )
                 self.stage = "start_gateway"
                 _require_lifecycle_owner_approval(
                     owner_approval_receipt,
@@ -4158,13 +4201,13 @@ class NativeObservationExecutor:
             self.stage = "stop_services"
             cleanup: list[BaseException] = []
             if lifecycle_start_attempted:
-                for unit in (GATEWAY_UNIT, WRITER_UNIT):
+                for unit in (GATEWAY_UNIT, WRITER_UNIT, PHASE_B_READINESS_UNIT):
                     try:
                         self._stop(unit)
                     except BaseException as exc:
                         cleanup.append(exc)
             try:
-                for unit in (GATEWAY_UNIT, WRITER_UNIT):
+                for unit in (GATEWAY_UNIT, WRITER_UNIT, PHASE_B_READINESS_UNIT):
                     if permanent_units_installed and daemon_reloaded:
                         _require_off_disabled(unit, runner=self.runner)
                     else:
@@ -4180,6 +4223,22 @@ class NativeObservationExecutor:
                     "native observation cleanup failed",
                     ([primary] if primary is not None else []) + cleanup,
                 )
+            if (
+                primary is not None
+                and installed_artifacts
+                and not lifecycle_start_attempted
+            ):
+                try:
+                    _rollback_native_observation_artifacts(
+                        self.plan,
+                        installed_artifacts,
+                        runner=self.runner,
+                    )
+                except BaseException as rollback_error:
+                    primary = ExceptionGroup(
+                        "native observation rollback failed",
+                        [primary, rollback_error],
+                    )
         if primary is None and stage_written:
             try:
                 self.stage = "finalize_native"
@@ -4380,10 +4439,14 @@ def _rehash_native_receipt_external_mappings(
                 or before.st_nlink != 1
                 or before.st_uid != policy["required_owner_uid"]
                 or before.st_gid != policy["required_owner_gid"]
-                or mode & 0o222
+                # Root ownership is pinned immediately above.  Preserve the
+                # live-observation contract: root may own writable package
+                # files, while the unprivileged service identities must never
+                # be able to modify them through group/other permissions.
+                or mode & 0o022
                 or _list_xattrs(path)
                 or before.st_size < 1
-                or before.st_size > _MAX_RELEASE_FILE_BYTES * 8
+                or before.st_size > _MAX_NATIVE_MAPPING_BYTES
             ):
                 raise RuntimeError("native receipt mapping protection drifted")
             digest = cache.get(path)
@@ -4393,7 +4456,7 @@ def _rehash_native_receipt_external_mappings(
                     expected_uid=policy["required_owner_uid"],
                     expected_gid=policy["required_owner_gid"],
                     allowed_modes=frozenset({mode}),
-                    maximum=_MAX_RELEASE_FILE_BYTES * 8,
+                    maximum=_MAX_NATIVE_MAPPING_BYTES,
                 )
                 digest = _sha256_bytes(raw)
                 cache[path] = digest
@@ -4635,8 +4698,8 @@ class ActivationExecutor:
             completed = _systemd_show(EXPORTER_UNIT, runner=self.runner)
             if (
                 completed["LoadState"] != "loaded"
-                or completed["ActiveState"] != "inactive"
-                or completed["SubState"] != "dead"
+                or completed["ActiveState"] != "active"
+                or completed["SubState"] != "exited"
                 or completed["MainPID"] != "0"
                 or completed["FragmentPath"] != str(self.plan.paths.exporter_unit_path)
                 or completed["DropInPaths"] != ""
@@ -4849,8 +4912,28 @@ class ActivationExecutor:
                 plan_sha256=self.plan.sha256,
             )
             service_start_attempted = True
-            self._command((SYSTEMCTL, "start", WRITER_UNIT), "start writer", timeout=90)
-            writer_pid = _require_active(WRITER_UNIT, runner=self.runner)
+            # This is the second and final pre-Phase-B observation.  Preserve
+            # the permanent readiness dependency and ignore it only for this
+            # exact owner-approved, stop-on-exit systemd job.
+            permit_file_sha256, permit_writer_gid = (
+                _install_pre_phase_b_start_permit(
+                    self.plan,
+                    owner_approval_receipt=owner_approval_receipt,
+                    external_iam_receipt=iam_receipt,
+                )
+            )
+            try:
+                self._command(
+                    PRE_PHASE_B_WRITER_START_ARGV,
+                    "start writer",
+                    timeout=90,
+                )
+                writer_pid = _require_active(WRITER_UNIT, runner=self.runner)
+            finally:
+                _remove_pre_phase_b_start_permit(
+                    file_sha256=permit_file_sha256,
+                    writer_gid=permit_writer_gid,
+                )
             self.stage = "start_gateway"
             _require_lifecycle_owner_approval(
                 owner_approval_receipt,

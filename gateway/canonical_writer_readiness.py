@@ -20,6 +20,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from gateway.canonical_boot_identity import current_boot_id
 from gateway.canonical_writer_postgres_backend import (
     CANONICAL_WRITER_MIGRATION_OWNER,
 )
@@ -39,7 +40,7 @@ DEFAULT_WRITER_LIVENESS_RECEIPT_PATH = Path(
 )
 _MAX_RECEIPT_BYTES = 256 * 1024
 _EXPECTED_PING_FIELDS = frozenset(
-    {"request_id", "service", "protocol", "database_identity"}
+    {"request_id", "status", "service", "protocol", "database_identity"}
 )
 
 
@@ -68,20 +69,14 @@ def _process_start_time_ticks(pid: int) -> int:
 
 
 def boot_identity() -> tuple[str, int]:
-    raw_boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
-        encoding="ascii"
-    ).strip()
-    try:
-        parsed = uuid.UUID(raw_boot_id)
-    except ValueError as exc:
-        raise RuntimeError("runtime boot identity is invalid") from exc
+    raw_boot_id = current_boot_id()
     clock_id = getattr(time, "CLOCK_BOOTTIME", None)
     if clock_id is None:
         raise RuntimeError("runtime boottime clock is unavailable")
     boottime_ns = time.clock_gettime_ns(clock_id)
     if boottime_ns < 0:
         raise RuntimeError("runtime boottime clock is invalid")
-    return hashlib.sha256(str(parsed).encode("ascii")).hexdigest(), boottime_ns
+    return hashlib.sha256(raw_boot_id.encode("ascii")).hexdigest(), boottime_ns
 
 
 def _module_identity() -> tuple[str, str]:
@@ -414,6 +409,7 @@ def write_runtime_attestation(
 def _validate_ping_response(response: Mapping[str, Any]) -> str:
     if (
         set(response) != _EXPECTED_PING_FIELDS
+        or response.get("status") != "ok"
         or response.get("service") != "canonical_writer"
         or response.get("protocol") != "v1"
         or response.get("database_identity") != CANONICAL_WRITER_MIGRATION_OWNER

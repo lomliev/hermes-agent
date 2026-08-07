@@ -94,6 +94,96 @@ def test_command_has_fixed_clean_environment_and_rejects_shell():
         activation.Command(("/bin/sh", "-c", "true"))
 
 
+def test_pre_phase_b_writer_start_ignores_only_the_dependency_job_graph():
+    assert activation.PRE_PHASE_B_WRITER_START_ARGV == (
+        activation.SYSTEMCTL,
+        "start",
+        "--job-mode=ignore-dependencies",
+        activation.WRITER_UNIT,
+    )
+    assert activation.PHASE_B_READINESS_UNIT not in (
+        activation.PRE_PHASE_B_WRITER_START_ARGV
+    )
+
+
+def test_pre_phase_b_start_permit_binds_exact_native_lifecycle(monkeypatch):
+    plan = activation.NativeObservationPlan(value={
+        "revision": "a" * 40,
+        "artifact_root": "/opt/muncho-canary-releases/" + "a" * 40,
+        "artifact_sha256": "b" * 64,
+        "release_manifest_file_sha256": "c" * 64,
+        "writer_config": {
+            "path": "/etc/muncho-canonical-writer/writer.json",
+            "sha256": "d" * 64,
+        },
+        "identities": {"writer_uid": 999, "writer_gid": 994},
+        "boot_id_sha256": "e" * 64,
+    })
+    owner = _owner_approval("native_observation", plan.sha256)
+    iam = SimpleNamespace(sha256="f" * 64)
+    calls = []
+    monkeypatch.setattr(
+        activation.NativeObservationPlan,
+        "from_mapping",
+        lambda _value: plan,
+    )
+    monkeypatch.setattr(
+        activation,
+        "build_pre_phase_b_start_permit",
+        lambda **kwargs: calls.append(("build", kwargs)) or {"permit": "exact"},
+    )
+    monkeypatch.setattr(
+        activation,
+        "canonical_pre_phase_b_start_permit_bytes",
+        lambda value: calls.append(("encode", value)) or b"exact-permit\n",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_unlink_exact",
+        lambda *args, **kwargs: calls.append(("unlink", args, kwargs)),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_install_exact_bytes",
+        lambda *args, **kwargs: calls.append(("install", args, kwargs)) or True,
+    )
+
+    file_sha256, writer_gid = activation._install_pre_phase_b_start_permit(
+        plan,
+        owner_approval_receipt=owner,
+        external_iam_receipt=iam,
+    )
+
+    assert writer_gid == 994
+    assert file_sha256 == activation.hashlib.sha256(b"exact-permit\n").hexdigest()
+    assert calls[0] == (
+        "build",
+        {
+            "revision": "a" * 40,
+            "artifact_root": "/opt/muncho-canary-releases/" + "a" * 40,
+            "artifact_sha256": "b" * 64,
+            "release_manifest_file_sha256": "c" * 64,
+            "writer_config_path": "/etc/muncho-canonical-writer/writer.json",
+            "writer_config_sha256": "d" * 64,
+            "writer_uid": 999,
+            "writer_gid": 994,
+            "boot_id_sha256": "e" * 64,
+            "scope": "native_observation",
+            "plan_sha256": plan.sha256,
+            "owner_approval_receipt_sha256": owner.sha256,
+            "owner_approval_expires_at_unix": owner.value["expires_at_unix"],
+            "external_iam_receipt_sha256": "f" * 64,
+        },
+    )
+    assert calls[1] == ("encode", {"permit": "exact"})
+    assert calls[2][0] == "unlink"
+    assert calls[3] == (
+        "install",
+        (activation.DEFAULT_PRE_PHASE_B_START_PERMIT_PATH, b"exact-permit\n"),
+        {"uid": 0, "gid": 994, "mode": 0o440},
+    )
+
+
 def test_activation_lock_is_under_root_controlled_run_not_world_writable_run_lock():
     assert activation.ACTIVATION_LOCK_PATH == Path("/run/muncho-writer-activation.lock")
 
@@ -126,6 +216,200 @@ def test_ca_parent_writer_group_requires_explicit_opt_in(monkeypatch):
         Path("/etc/muncho/trust"),
         allowed_parent_gids=frozenset({0, activation.CANARY_WRITER_GID}),
     )
+
+
+def test_absent_install_parent_accepts_only_root_controlled_existing_ancestor(
+    monkeypatch,
+):
+    existing = {
+        Path("/"): _parent_stat(mode=0o755),
+        Path("/trusted-root"): _parent_stat(mode=0o700),
+    }
+    created = []
+    monkeypatch.setattr(
+        activation.os.path,
+        "lexists",
+        lambda path: Path(path) in existing,
+    )
+    monkeypatch.setattr(
+        activation.os,
+        "lstat",
+        lambda path: existing[Path(path)],
+    )
+    monkeypatch.setattr(activation, "_list_xattrs", lambda _path: ())
+    monkeypatch.setattr(
+        activation.os,
+        "mkdir",
+        lambda *args, **kwargs: created.append((args, kwargs)),
+    )
+
+    activation._validate_existing_root_ancestor_chain(
+        Path("/trusted-root/future/config")
+    )
+
+    assert created == []
+
+    existing[Path("/trusted-root")] = _parent_stat(mode=0o777)
+    with pytest.raises(PermissionError, match="not root-controlled"):
+        activation._validate_existing_root_ancestor_chain(
+            Path("/trusted-root/future/config")
+        )
+
+
+def test_native_install_creates_exact_root_parents_before_artifacts(monkeypatch):
+    payload = b"sealed-artifact"
+    digest = activation.hashlib.sha256(payload).hexdigest()
+    artifacts = {
+        "writer_config": activation.InstallArtifact(
+            source_path=Path("/stage/writer.json"),
+            target_path=Path("/etc/muncho-canonical-writer/writer.json"),
+            sha256=digest,
+            mode=0o440,
+            uid=0,
+            gid=994,
+            maximum_bytes=1024,
+        ),
+        "gateway_config": activation.InstallArtifact(
+            source_path=Path("/stage/gateway.yaml"),
+            target_path=Path("/etc/hermes/config.yaml"),
+            sha256=digest,
+            mode=0o444,
+            uid=0,
+            gid=0,
+            maximum_bytes=1024,
+        ),
+        "writer_unit": activation.InstallArtifact(
+            source_path=Path("/stage/writer.service"),
+            target_path=Path("/etc/systemd/system/writer.service"),
+            sha256=digest,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=1024,
+        ),
+        "phase_b_readiness_unit": activation.InstallArtifact(
+            source_path=Path("/stage/readiness.service"),
+            target_path=Path("/etc/systemd/system/readiness.service"),
+            sha256=digest,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=1024,
+        ),
+        "gateway_unit": activation.InstallArtifact(
+            source_path=Path("/stage/gateway.service"),
+            target_path=Path("/etc/systemd/system/gateway.service"),
+            sha256=digest,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=1024,
+        ),
+    }
+    events = []
+    monkeypatch.setattr(
+        activation,
+        "_native_artifact_contract",
+        lambda _plan: artifacts,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_ensure_root_directory",
+        lambda path, *, mode=0o700: events.append(("parent", path, mode)),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_read_trusted_file",
+        lambda *_args, **_kwargs: payload,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_install_exact_bytes",
+        lambda path, _payload, **_kwargs: events.append(("install", path)) or True,
+    )
+
+    created = activation._install_native_observation_artifacts(
+        activation.NativeObservationPlan(value={})
+    )
+
+    assert events[:3] == [
+        ("parent", Path("/etc/hermes"), 0o755),
+        ("parent", Path("/etc/muncho-canonical-writer"), 0o755),
+        ("parent", Path("/etc/systemd/system"), 0o755),
+    ]
+    assert events[3:] == [
+        ("install", artifacts[name].target_path)
+        for name in (
+            "writer_config",
+            "gateway_config",
+            "writer_unit",
+            "phase_b_readiness_unit",
+            "gateway_unit",
+        )
+    ]
+    assert created == tuple(
+        artifacts[name].target_path
+        for name in (
+            "writer_config",
+            "gateway_config",
+            "writer_unit",
+            "phase_b_readiness_unit",
+            "gateway_unit",
+        )
+    )
+
+
+def test_native_observation_prestart_rollback_unlinks_exact_reverse_order(
+    monkeypatch,
+):
+    paths = (
+        Path("/etc/muncho-canonical-writer/writer.json"),
+        Path("/etc/systemd/system/muncho-canonical-writer.service"),
+        Path(
+            "/etc/systemd/system/"
+            "muncho-canonical-writer-phase-b-readiness.service"
+        ),
+    )
+    artifacts = {
+        f"artifact-{index}": activation.InstallArtifact(
+            source_path=Path(f"/stage/{index}"),
+            target_path=path,
+            sha256=str(index + 1) * 64,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=1024,
+        )
+        for index, path in enumerate(paths)
+    }
+    events = []
+    monkeypatch.setattr(
+        activation,
+        "_native_artifact_contract",
+        lambda _plan: artifacts,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_unlink_exact",
+        lambda path, **kwargs: events.append(("unlink", path, kwargs["sha256"])),
+    )
+
+    def runner(command):
+        events.append(("command", command.argv))
+        return subprocess.CompletedProcess(command.argv, 0, b"", b"")
+
+    activation._rollback_native_observation_artifacts(
+        activation.NativeObservationPlan(value={}),
+        paths,
+        runner=runner,
+    )
+
+    assert events == [
+        ("unlink", paths[2], "3" * 64),
+        ("unlink", paths[1], "2" * 64),
+        ("unlink", paths[0], "1" * 64),
+        ("command", (activation.SYSTEMCTL, "daemon-reload")),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -591,8 +875,10 @@ def test_root_receipt_archive_cross_binds_exact_evidence_bundle(monkeypatch):
     assert installed[0][1] == root_raw
 
 
+@pytest.mark.parametrize("mode", [0o644, 0o755])
 def test_durable_native_replay_rehashes_external_library_before_mutation(
     monkeypatch,
+    mode,
 ):
     path = Path("/usr/lib/muncho-reviewed.so")
     payload = b"current-reviewed-native-library"
@@ -622,7 +908,7 @@ def test_durable_native_replay_rehashes_external_library_before_mutation(
         }
     )
     observed = SimpleNamespace(
-        st_mode=stat.S_IFREG | 0o444,
+        st_mode=stat.S_IFREG | mode,
         st_nlink=1,
         st_uid=0,
         st_gid=0,
@@ -647,6 +933,62 @@ def test_durable_native_replay_rehashes_external_library_before_mutation(
     ] = "f" * 64
 
     with pytest.raises(RuntimeError, match="mapping digest drifted"):
+        activation._rehash_native_receipt_external_mappings(receipt)
+
+
+@pytest.mark.parametrize("mode", [0o664, 0o646])
+def test_durable_native_replay_rejects_group_or_other_writable_library(
+    monkeypatch,
+    mode,
+):
+    path = Path("/usr/lib/muncho-rejected.so")
+    payload = b"rejected-native-library"
+    receipt = activation.NativeObservationReceipt(
+        value={
+            "plan": {},
+            "observation": {
+                "gateway_service": {
+                    "external_native_mappings": [
+                        {"path": str(path), "sha256": activation._sha256_bytes(payload)}
+                    ]
+                },
+                "writer_service": {
+                    "external_native_mappings": [
+                        {"path": str(path), "sha256": activation._sha256_bytes(payload)}
+                    ]
+                },
+            },
+        }
+    )
+    monkeypatch.setattr(
+        activation.NativeObservationPlan,
+        "from_mapping",
+        lambda _value: SimpleNamespace(
+            value={
+                "artifact_root": "/opt/muncho-canary-releases/" + "a" * 40,
+                "native_discovery_policy": {
+                    "allowed_roots": ["/usr/lib"],
+                    "maximum_mappings": 256,
+                    "required_owner_uid": 0,
+                    "required_owner_gid": 0,
+                },
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        activation.os,
+        "lstat",
+        lambda _path: SimpleNamespace(
+            st_mode=stat.S_IFREG | mode,
+            st_nlink=1,
+            st_uid=0,
+            st_gid=0,
+            st_size=len(payload),
+        ),
+    )
+    monkeypatch.setattr(activation, "_list_xattrs", lambda _path: ())
+
+    with pytest.raises(RuntimeError, match="mapping protection drifted"):
         activation._rehash_native_receipt_external_mappings(receipt)
 
 
@@ -803,6 +1145,106 @@ def test_exporter_stdout_receipt_is_exact_and_count_bounded():
     assert all("sh" not in command.argv[:1] for command in commands)
 
 
+def test_projection_export_keeps_successful_invocation_until_receipt_collection(
+    tmp_path,
+    monkeypatch,
+):
+    exporter_path = tmp_path / activation.EXPORTER_UNIT
+    lifecycle = []
+    states = iter((
+        {
+            "LoadState": "loaded",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "MainPID": "0",
+            "UnitFileState": "static",
+            "FragmentPath": str(exporter_path),
+            "DropInPaths": "",
+            "NeedDaemonReload": "no",
+        },
+        {
+            "LoadState": "loaded",
+            "ActiveState": "active",
+            "SubState": "exited",
+            "MainPID": "0",
+            "UnitFileState": "static",
+            "FragmentPath": str(exporter_path),
+            "DropInPaths": "",
+            "NeedDaemonReload": "no",
+        },
+    ))
+    plan = SimpleNamespace(
+        paths=SimpleNamespace(
+            exporter_unit_path=exporter_path,
+            projection_export_path=tmp_path / "canonical-events.json",
+        ),
+        unit_bundle=SimpleNamespace(
+            exporter_service="[Service]\nType=oneshot\nRemainAfterExit=yes\n",
+        ),
+        digests=SimpleNamespace(
+            exporter_unit_sha256=activation._sha256_bytes(
+                b"[Service]\nType=oneshot\nRemainAfterExit=yes\n"
+            ),
+        ),
+        identities=object(),
+    )
+
+    def runner(command):
+        lifecycle.append(command.argv)
+        return subprocess.CompletedProcess(command.argv, 0, b"", b"")
+
+    monkeypatch.setattr(
+        activation,
+        "_install_exact_bytes",
+        lambda *_args, **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_systemd_show",
+        lambda _unit, *, runner: next(states),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_systemd_invocation_id",
+        lambda _unit, *, runner: lifecycle.append("invocation") or "a" * 32,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_exporter_stdout_receipt",
+        lambda _invocation, *, runner: lifecycle.append("receipt")
+        or {"event_count": 2, "success": True},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_validate_projection",
+        lambda _path, _identities: lifecycle.append("projection")
+        or {"event_count": 2},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_unlink_exact",
+        lambda *_args, **_kwargs: lifecycle.append("unlink"),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_disabled",
+        lambda *_args, **_kwargs: lifecycle.append("absent"),
+    )
+
+    result = activation.ActivationExecutor(plan, runner=runner)._run_projection_export()
+
+    assert result == {
+        "event_count": 2,
+        "stdout_receipt": {"event_count": 2, "success": True},
+    }
+    assert lifecycle.index("invocation") < lifecycle.index(
+        (activation.SYSTEMCTL, "stop", activation.EXPORTER_UNIT)
+    )
+    assert lifecycle[-2] == (activation.SYSTEMCTL, "daemon-reload")
+    assert lifecycle.index("unlink") < len(lifecycle) - 2
+    assert lifecycle[-1] == "absent"
+
+
 def test_projection_validation_binds_canonical_count_hash_and_identity(
     tmp_path,
     monkeypatch,
@@ -915,6 +1357,7 @@ def test_final_activation_rechecks_owner_freshness_before_each_dangerous_step(
     lifecycle = []
     invalidations = []
     seals = []
+    permits = []
     paths = SimpleNamespace(
         quarantine_path=tmp_path / "quarantine.json",
         root_receipt_path=tmp_path / "root.json",
@@ -1004,6 +1447,16 @@ def test_final_activation_rechecks_owner_freshness_before_each_dangerous_step(
     monkeypatch.setattr(
         activation, "_require_off_disabled", lambda *_args, **_kwargs: None
     )
+    monkeypatch.setattr(
+        activation,
+        "_install_pre_phase_b_start_permit",
+        lambda *_args, **_kwargs: ("f" * 64, activation.CANARY_WRITER_GID),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_remove_pre_phase_b_start_permit",
+        lambda **kwargs: permits.append(kwargs),
+    )
 
     def sealed(*_args, **_kwargs):
         seals.append(True)
@@ -1023,11 +1476,26 @@ def test_final_activation_rechecks_owner_freshness_before_each_dangerous_step(
         )
 
     started = [
-        argv[2]
+        argv[-1]
         for argv in commands
         if argv[:2] == (activation.SYSTEMCTL, "start")
     ]
     assert started == expected_started
+    if expected_started:
+        writer_start = next(
+            argv
+            for argv in commands
+            if argv[:2] == (activation.SYSTEMCTL, "start")
+        )
+        assert writer_start == activation.PRE_PHASE_B_WRITER_START_ARGV
+        assert permits == [
+            {
+                "file_sha256": "f" * 64,
+                "writer_gid": activation.CANARY_WRITER_GID,
+            }
+        ]
+    else:
+        assert permits == []
     assert activation.GATEWAY_UNIT not in started
     assert bool(seals) is expected_sealed
     if expire_on_require <= 3:
@@ -1051,6 +1519,7 @@ def test_native_expired_approval_before_host_mutation_is_retryable_not_forensic(
     real_require = activation.OwnerApprovalReceipt.require
     require_calls = 0
     calls = []
+    preflight_calls = []
 
     def expiring_require(self, *, scope, plan_sha256, now_unix):
         nonlocal require_calls
@@ -1095,7 +1564,7 @@ def test_native_expired_approval_before_host_mutation_is_retryable_not_forensic(
     monkeypatch.setattr(
         activation,
         "_verify_native_preflight_inputs",
-        lambda *_args, **_kwargs: None,
+        lambda *_args, **kwargs: preflight_calls.append(kwargs),
     )
     monkeypatch.setattr(
         activation,
@@ -1128,6 +1597,14 @@ def test_native_expired_approval_before_host_mutation_is_retryable_not_forensic(
 
     assert not [
         argv for argv in calls if argv[:2] == (activation.SYSTEMCTL, "start")
+    ]
+    assert preflight_calls == [
+        {
+            "runner": executor.runner,
+            "require_installed": False,
+            "require_original_boot": True,
+            "require_collector_fresh": False,
+        }
     ]
 
 
@@ -1248,12 +1725,203 @@ def test_native_expired_approval_after_host_mutation_is_forensic(
     ]
 
 
+def test_native_observation_uses_exact_pre_phase_b_writer_start(
+    tmp_path,
+    monkeypatch,
+):
+    plan = activation.NativeObservationPlan(value={
+        "revision": "b" * 40,
+        "external_iam_policy_sha256": "c" * 64,
+    })
+    owner = _owner_approval("native_observation", plan.sha256)
+    commands = []
+    writes = []
+    permits = []
+
+    def runner(command):
+        commands.append(command.argv)
+        return subprocess.CompletedProcess(
+            command.argv,
+            1 if command.argv == activation.PRE_PHASE_B_WRITER_START_ARGV else 0,
+            b"",
+            b"",
+        )
+
+    executor = activation.NativeObservationExecutor(plan, runner=runner)
+    quarantine = tmp_path / "quarantine.json"
+    failure = tmp_path / "failure.json"
+    monkeypatch.setattr(activation, "_host_activation_lock", lambda: nullcontext())
+    monkeypatch.setattr(activation, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(activation, "DEFAULT_QUARANTINE_PATH", quarantine)
+    monkeypatch.setattr(activation.os.path, "lexists", lambda _path: False)
+    monkeypatch.setattr(
+        activation,
+        "_native_receipt_path",
+        lambda _plan: tmp_path / "native-receipt.json",
+    )
+    monkeypatch.setattr(
+        activation,
+        "_native_stage_path",
+        lambda _plan: tmp_path / "native-stage.json",
+    )
+    iam_receipt = SimpleNamespace(sha256="e" * 64)
+    monkeypatch.setattr(
+        activation,
+        "_load_lifecycle_external_iam",
+        lambda *_args, **_kwargs: iam_receipt,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_verify_native_preflight_inputs",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_archive_plan_external_iam",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(activation, "_host_identity_snapshot", lambda: {})
+    monkeypatch.setattr(
+        activation,
+        "prepare_canary_host_identities",
+        lambda *_args, **_kwargs: {"changed": False},
+    )
+    monkeypatch.setattr(
+        activation,
+        "_record_host_preparation",
+        lambda *_args, **_kwargs: {
+            "receipt_path": str(tmp_path / "host.json"),
+            "receipt_sha256": "d" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        activation,
+        "_install_native_observation_artifacts",
+        lambda _plan: (),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_prepare_native_runtime_directories",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_disabled",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_or_absent",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(activation, "_native_failure_path", lambda _plan: failure)
+    monkeypatch.setattr(activation, "_ensure_root_directory", lambda *_args: None)
+    monkeypatch.setattr(
+        activation,
+        "_write_root_receipt",
+        lambda path, value: writes.append((path, value)),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_install_pre_phase_b_start_permit",
+        lambda *_args, **_kwargs: ("f" * 64, activation.CANARY_WRITER_GID),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_remove_pre_phase_b_start_permit",
+        lambda **kwargs: permits.append(kwargs),
+    )
+
+    with pytest.raises(RuntimeError, match="failed closed"):
+        executor.observe(
+            approved_plan_sha256=plan.sha256,
+            owner_approval_receipt=owner,
+            external_iam_receipt_path=activation.DEFAULT_EXTERNAL_IAM_LIVE_PATH,
+        )
+
+    assert activation.PRE_PHASE_B_WRITER_START_ARGV in commands
+    assert permits == [
+        {
+            "file_sha256": "f" * 64,
+            "writer_gid": activation.CANARY_WRITER_GID,
+        }
+    ]
+    assert [path for path, _value in writes] == [failure, quarantine]
+    assert {value["stage"] for _path, value in writes} == {"start_writer"}
+    assert all(value["stage_preserved"] is False for _path, value in writes)
+    assert all(
+        value["host_preparation_evidence"]
+        == {
+            "receipt_path": str(tmp_path / "host.json"),
+            "receipt_sha256": "d" * 64,
+        }
+        for _path, value in writes
+    )
+
+
+def test_host_identity_convergence_retries_only_until_exact(monkeypatch):
+    snapshots = iter((
+        {"state": "stale"},
+        {"state": "still-stale"},
+        {"state": "exact"},
+    ))
+    sleeps = []
+    monkeypatch.setattr(
+        activation,
+        "_host_identities_are_exact",
+        lambda value: value == {"state": "exact"},
+    )
+
+    observed = activation._wait_for_exact_host_identities(
+        snapshotter=lambda: next(snapshots),
+        sleeper=sleeps.append,
+        attempts=3,
+        delay_seconds=0.25,
+    )
+
+    assert observed == {"state": "exact"}
+    assert sleeps == [0.25, 0.25]
+
+
+def test_host_identity_convergence_remains_bounded(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def snapshot():
+        nonlocal calls
+        calls += 1
+        return {"state": "stale"}
+
+    monkeypatch.setattr(
+        activation,
+        "_host_identities_are_exact",
+        lambda _value: False,
+    )
+
+    with pytest.raises(RuntimeError, match="did not converge"):
+        activation._wait_for_exact_host_identities(
+            snapshotter=snapshot,
+            sleeper=sleeps.append,
+            attempts=4,
+            delay_seconds=0.1,
+        )
+
+    assert calls == 4
+    assert sleeps == [0.1, 0.1, 0.1]
+
+
 def test_systemd_bundle_rejects_installable_temporary_exporter():
     value = {
         "schema": activation.SYSTEMD_BUNDLE_SCHEMA,
-        "writer_service": "[Service]\nType=notify\n",
+        "writer_service": (
+            "[Service]\nType=notify\n"
+            f"{activation.SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE}\n"
+        ),
         "phase_b_readiness_service": "[Service]\nType=oneshot\n",
-        "gateway_service": "[Service]\nType=notify\n",
+        "gateway_service": (
+            "[Service]\nType=notify\n"
+            f"{activation.SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE}\n"
+        ),
         "exporter_service": "[Service]\nType=oneshot\n[Install]\n",
         "tmpfiles": "d /run/x 0700 root root - -\n",
         "contract": {"revision": "a" * 40},
@@ -1304,7 +1972,7 @@ def test_host_identity_exactness_excludes_writer_and_discord_memberships():
         },
         "effective_gid_members": {
             "990": [activation.GATEWAY_USER],
-            "991": [activation.PROJECTOR_USER, activation.WRITER_USER],
+            "991": sorted((activation.PROJECTOR_USER, activation.WRITER_USER)),
             "992": [activation.GATEWAY_USER],
             "994": [activation.WRITER_USER],
         },
@@ -1358,6 +2026,7 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
 ):
     commands = []
     receipts = []
+    permits = []
     paths = SimpleNamespace(
         quarantine_path=tmp_path / "quarantine.json",
         root_receipt_path=tmp_path / "root.json",
@@ -1379,7 +2048,7 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
         commands.append(command.argv)
         returncode = (
             1
-            if command.argv == (activation.SYSTEMCTL, "start", activation.WRITER_UNIT)
+            if command.argv == activation.PRE_PHASE_B_WRITER_START_ARGV
             else 0
         )
         return subprocess.CompletedProcess(command.argv, returncode, b"", b"")
@@ -1429,6 +2098,16 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
     monkeypatch.setattr(
         activation, "_require_off_disabled", lambda *_args, **_kwargs: None
     )
+    monkeypatch.setattr(
+        activation,
+        "_install_pre_phase_b_start_permit",
+        lambda *_args, **_kwargs: ("f" * 64, activation.CANARY_WRITER_GID),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_remove_pre_phase_b_start_permit",
+        lambda **kwargs: permits.append(kwargs),
+    )
     failure_path = tmp_path / "failure.json"
     monkeypatch.setattr(
         activation,
@@ -1454,6 +2133,12 @@ def test_writer_start_failure_still_unconditionally_stops_gateway_then_writer(
         "stop",
         activation.GATEWAY_UNIT,
     )) < commands.index((activation.SYSTEMCTL, "stop", activation.WRITER_UNIT))
+    assert permits == [
+        {
+            "file_sha256": "f" * 64,
+            "writer_gid": activation.CANARY_WRITER_GID,
+        }
+    ]
     assert [path for path, _value in receipts] == [
         failure_path,
         paths.quarantine_path,
@@ -1538,21 +2223,33 @@ def test_public_durable_native_receipt_loader_is_fail_closed(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("require_installed", "expected_events"),
+    (
+        "require_installed",
+        "require_collector_fresh",
+        "expected_events",
+    ),
     (
         (
             False,
+            True,
             ("collector:True", "release", "database", "collector:True"),
         ),
         (
+            False,
+            False,
+            ("collector:False", "release", "database", "collector:False"),
+        ),
+        (
             True,
+            False,
             ("release", "database", "collector:False", "collector:False"),
         ),
     ),
 )
-def test_packaged_preflight_requires_fresh_initial_collector_but_attests_db_before_expired_replay(
+def test_packaged_preflight_separates_static_collector_from_live_database_attestation(
     monkeypatch,
     require_installed,
+    require_collector_fresh,
     expected_events,
 ):
     plan = _collector_bound_native_plan()
@@ -1610,6 +2307,7 @@ def test_packaged_preflight_requires_fresh_initial_collector_but_attests_db_befo
         runner=lambda _command: None,
         require_installed=require_installed,
         require_original_boot=False,
+        require_collector_fresh=require_collector_fresh,
     )
 
     assert tuple(events) == expected_events
@@ -1636,8 +2334,85 @@ def test_packaged_preflight_requires_fresh_initial_collector_but_attests_db_befo
             runner=lambda _command: None,
             require_installed=require_installed,
             require_original_boot=False,
+            require_collector_fresh=require_collector_fresh,
         )
     assert trusted_reads == []
+
+
+def test_packaged_preflight_allows_absent_future_install_parent(monkeypatch):
+    plan = _collector_bound_native_plan()
+    payload = b"staged-writer-config"
+    source = Path("/staged/writer.json")
+    target = Path("/trusted-root/future/writer.json")
+    checked = []
+
+    class Receipt:
+        def to_mapping(self):
+            return {"receipt_sha256": "5" * 64}
+
+    receipt = Receipt()
+    monkeypatch.setattr(
+        activation,
+        "_load_bound_config_collector_receipt",
+        lambda *_args, **_kwargs: receipt,
+    )
+    monkeypatch.setattr(
+        activation,
+        "current_host_identity_sha256",
+        lambda: "2" * 64,
+    )
+    monkeypatch.setattr(activation, "_verify_native_release", lambda _plan: None)
+    monkeypatch.setattr(
+        activation,
+        "_native_artifact_contract",
+        lambda _plan: {
+            "writer_config": activation.InstallArtifact(
+                source_path=source,
+                target_path=target,
+                sha256=activation.hashlib.sha256(payload).hexdigest(),
+                mode=0o440,
+                uid=0,
+                gid=activation.CANARY_WRITER_GID,
+                maximum_bytes=activation._MAX_CONFIG_BYTES,
+            )
+        },
+    )
+    monkeypatch.setattr(
+        activation,
+        "_read_trusted_file",
+        lambda path, **_kwargs: payload if Path(path) == source else b"trusted-ca",
+    )
+    monkeypatch.setattr(activation.os.path, "lexists", lambda _path: False)
+    monkeypatch.setattr(
+        activation,
+        "_validate_existing_root_ancestor_chain",
+        lambda path: checked.append(Path(path)),
+    )
+    monkeypatch.setattr(
+        activation,
+        "_verify_database_read_only",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_disabled",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        activation,
+        "_require_off_or_absent",
+        lambda *_args, **_kwargs: None,
+    )
+
+    activation._verify_native_preflight_inputs(
+        plan,
+        runner=lambda _command: None,
+        require_installed=False,
+        require_original_boot=False,
+        require_collector_fresh=False,
+    )
+
+    assert checked == [target.parent]
 
 
 def test_final_preflight_reads_database_ca_with_writer_group(monkeypatch):

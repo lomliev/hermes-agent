@@ -499,6 +499,31 @@ def test_minimum_reservation_architecture_guard_has_no_runtime_router_or_templat
     assert "recommended_alternative" not in payload_keys
     assert "customer_ready_answer" not in payload_keys
 
+
+def test_value_voucher_architecture_guard_has_no_runtime_router_or_templates() -> None:
+    combined = "\n".join(
+        Path(path).read_text(encoding="utf-8")
+        for path in (
+            "plugins/skyai_customer/public_tools.py",
+            "plugins/skyai_customer/dev_gateway.py",
+            "plugins/skyai_customer/production_gateway.py",
+        )
+    )
+    forbidden = (
+        "VALUE_VOUCHER_QUERY_TERMS",
+        "_value_voucher_requested",
+        "value_voucher_classifier",
+        "value_voucher_router",
+        "value_voucher_scenario_router",
+        "value_voucher_answer_template",
+        "value_voucher_response_template",
+        "value_voucher_post_process",
+        "value_voucher_answer_rewrite",
+    )
+    for marker in forbidden:
+        assert marker not in combined
+
+
 def test_campaign_tool_returns_fact_pack_not_customer_script() -> None:
     result = public_tools.handle_skyai_campaign_knowledge()
     serialized = json.dumps(result, ensure_ascii=False)

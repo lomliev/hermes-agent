@@ -31,7 +31,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Mapping, NoReturn, Sequence
+from typing import Any, Callable, ContextManager, Mapping, NoReturn, Sequence
 
 from scripts.canary.runtime_units import CANARY_RUNTIME_UNITS
 
@@ -63,6 +63,7 @@ from gateway.canonical_writer_release_contract import (
     _REVISION_RE,
     render_systemd_units,
 )
+from gateway.canonical_writer_lifecycle_lock import host_release_lifecycle_lock
 
 BUILD_SCRATCH_NAME = ".release-build-scratch"
 SCRATCH_PROVENANCE_NAME = "provenance.json"
@@ -131,6 +132,12 @@ _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_MODULE = Path(
 _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_BOOTSTRAP_MODULE = Path(
     "gateway/canonical_writer_schema_reconciliation_control_bootstrap.py"
 )
+_PACKAGED_CANONICAL_WRITER_SCHEMA_UPGRADE_MODULE = Path(
+    "gateway/canonical_writer_schema_upgrade.py"
+)
+_PACKAGED_CANONICAL_WRITER_SCHEMA_UPGRADE_RUNTIME_MODULE = Path(
+    "gateway/canonical_writer_schema_upgrade_runtime.py"
+)
 CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
     "scripts/sql/canonical_writer_v1.sql"
 )
@@ -172,16 +179,16 @@ _TRACKED_RELEASE_ARTIFACTS = (
 )
 _MAX_TRACKED_RELEASE_ARTIFACT_BYTES = 1024 * 1024
 _SCHEMA_CONTRACT_ASSET_FILE_SHA256 = (
-    "1d6b62eef9bf354ed90fa78ac80d536d107e0f75bf4119f5a21c65a5d4b05c11"
+    "bce9ebb459dff6f2bd2ff5ba69d3ec2cd3015c0f028d1bc50bade643bdc8b5c3"
 )
 _SCHEMA_CONTRACT_ASSET_SHA256 = (
-    "79496dfd5ee22166059e0ac85ac72f70d1b5181169e8ac9c6c1738d204adca33"
+    "e4aa1327131e5171a9ead9c7d98bbdee0b68ec96fad0dd2c91fb3bb49d6ce3cd"
 )
 _SCHEMA_CONTRACT_SHA256 = (
-    "5036aa2519c3b0b3a730db54b44d5750b70abc35cf3928069138a0c6391d3bab"
+    "f96742a7f8d3f026ae5c954a74b328f5d4e9b65dc865665f7412d10b0c85cab6"
 )
 _SCHEMA_CONTRACT_BASE_ARTIFACT_SHA256 = (
-    "df6c6f9f4a6e4df6c55f3cf32a60af4dac6b03ff940ad174035709ae14a58475"
+    "b78a25e154548efad0026133f7f6c6179cc8c1910428888164b35a668ee85e7b"
 )
 
 # The stopped publication boundary is intentionally narrower than the release
@@ -394,6 +401,17 @@ class ReleaseBuildSpec:
         return (
             self.site_packages
             / _PACKAGED_CANONICAL_WRITER_SCHEMA_RECONCILIATION_CONTROL_BOOTSTRAP_MODULE
+        )
+
+    @property
+    def schema_upgrade_module_origin(self) -> Path:
+        return self.site_packages / _PACKAGED_CANONICAL_WRITER_SCHEMA_UPGRADE_MODULE
+
+    @property
+    def schema_upgrade_runtime_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_SCHEMA_UPGRADE_RUNTIME_MODULE
         )
 
     @property
@@ -973,6 +991,8 @@ def create_release_manifest(spec: ReleaseBuildSpec) -> ReleaseManifest:
         spec.schema_reconciliation_runtime_module_origin,
         spec.schema_reconciliation_control_module_origin,
         spec.schema_reconciliation_control_bootstrap_module_origin,
+        spec.schema_upgrade_module_origin,
+        spec.schema_upgrade_runtime_module_origin,
         spec.schema_contract_asset_origin,
         spec.runtime_dependency_module_origin,
         spec.release_root / SOURCE_COMMIT_MARKER_RELATIVE_PATH,
@@ -1843,6 +1863,8 @@ def _validate_installed_runtime(
         spec.schema_reconciliation_runtime_module_origin,
         spec.schema_reconciliation_control_module_origin,
         spec.schema_reconciliation_control_bootstrap_module_origin,
+        spec.schema_upgrade_module_origin,
+        spec.schema_upgrade_runtime_module_origin,
     )
     for module_path in schema_reconciliation_module_paths:
         try:
@@ -2274,7 +2296,7 @@ def _materialize_copied_interpreter(
             os.unlink(temp_path)
 
 
-def build_release(
+def _build_release_locked(
     spec: ReleaseBuildSpec,
     *,
     runner: Runner = _runner,
@@ -2424,6 +2446,19 @@ def build_release(
     ):
         raise RuntimeError("release manifest was not sealed")
     return manifest
+
+
+def build_release(
+    spec: ReleaseBuildSpec,
+    *,
+    runner: Runner = _runner,
+    lifecycle_lock: Callable[[], ContextManager[int]] | None = None,
+) -> ReleaseManifest:
+    """Build and seal one exact release under the shared host lifecycle lock."""
+
+    lock = lifecycle_lock or host_release_lifecycle_lock
+    with lock():
+        return _build_release_locked(spec, runner=runner)
 
 
 HostObserver = Callable[[], Mapping[str, str]]
@@ -3752,7 +3787,7 @@ def _read_stopped_receipt_candidate_time(path: Path) -> int | None:
     return created_at_unix
 
 
-def apply_stopped_release(
+def _apply_stopped_release_locked(
     revision: str,
     approved_plan_sha256: str,
     *,
@@ -3910,6 +3945,49 @@ def apply_stopped_release(
         plan=post_build_plan,
         release=release_with_host,
     )
+
+
+def apply_stopped_release(
+    revision: str,
+    approved_plan_sha256: str,
+    *,
+    runner: Runner = _runner,
+    host_observer: HostObserver = _default_host_observer,
+    path_exists: PathExists = os.path.lexists,
+    release_builder: ReleaseBuilder = build_release,
+    host_receipt_collector: HostReceiptCollector = _default_host_receipt_collector,
+    source_retainer: SourceRetainer = _prune_stopped_release_sources,
+    clock: Clock = time.time,
+    lifecycle_lock: Callable[[], ContextManager[int]] | None = None,
+) -> dict[str, Any]:
+    """Publish a stopped release under the shared host lifecycle lock."""
+
+    if (
+        not isinstance(approved_plan_sha256, str)
+        or _SHA256_RE.fullmatch(approved_plan_sha256) is None
+    ):
+        raise ValueError("stopped-release approved plan digest is invalid")
+    prelock_plan = plan_stopped_release(
+        revision,
+        runner=runner,
+        host_observer=host_observer,
+        path_exists=path_exists,
+    )
+    if prelock_plan["plan_sha256"] != approved_plan_sha256:
+        raise PermissionError("stopped-release approved plan digest does not match")
+    lock = lifecycle_lock or host_release_lifecycle_lock
+    with lock():
+        return _apply_stopped_release_locked(
+            revision,
+            approved_plan_sha256,
+            runner=runner,
+            host_observer=host_observer,
+            path_exists=path_exists,
+            release_builder=release_builder,
+            host_receipt_collector=host_receipt_collector,
+            source_retainer=source_retainer,
+            clock=clock,
+        )
 
 
 class _CanonicalArgumentParser(argparse.ArgumentParser):

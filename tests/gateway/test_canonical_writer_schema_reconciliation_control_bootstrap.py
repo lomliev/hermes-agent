@@ -157,6 +157,35 @@ def _validate_gate(gate: Mapping[str, Any]) -> Mapping[str, Any]:
     )
 
 
+@pytest.mark.parametrize(
+    ("future_seconds", "accepted"),
+    ((2, True), (6, False)),
+)
+def test_owner_gate_tolerates_only_bounded_remote_clock_skew(
+    future_seconds: int,
+    accepted: bool,
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    gate["issued_at_unix"] = NOW + future_seconds
+    gate = _hashed(
+        {name: value for name, value in gate.items() if name != "gate_sha256"},
+        "gate_sha256",
+    )
+
+    def validate() -> Mapping[str, Any]:
+        return _validate_gate(gate)
+
+    if accepted:
+        assert validate() == gate
+    else:
+        with pytest.raises(
+            bootstrap.ControlBootstrapError,
+            match="schema_reconciliation_control_gate_invalid",
+        ):
+            validate()
+
+
 def _cloud_authority(gate: Mapping[str, Any]) -> dict[str, Any]:
     authority = [
         "a-authority",
@@ -182,8 +211,11 @@ def _cloud_authority(gate: Mapping[str, Any]) -> dict[str, Any]:
             "baseline_user_operations": [],
             "authority_operation": authority,
             "broad_bootstrap_authority": True,
-            "database_roles_requested": [],
+            "database_roles_requested": list(
+                bootstrap.CONTROL_ADMIN_DATABASE_ROLES
+            ),
             "normal_reconciliation_executor": False,
+            "resource_etag_sha256": _digest("exact-cloud-sql-user-etag"),
         },
         "receipt_sha256",
     )
@@ -224,6 +256,8 @@ def _observation(
     membership_count: int,
     observed_at_unix: int,
     provider_forward_role_count: int = 1,
+    helper_absent: bool = True,
+    helper_same_name_count: int = 0,
 ) -> dict[str, Any]:
     exact = state == "exact_installed"
     return _hashed(
@@ -241,7 +275,7 @@ def _observation(
             "control_admin_forward_roles_exact": control_admin_count == 1,
             "control_admin_role_exact": control_admin_count == 1,
             "control_admin_forward_role_count": (
-                provider_forward_role_count + membership_count
+                provider_forward_role_count + 1 + membership_count
                 if control_admin_count == 1
                 else 0
             ),
@@ -273,12 +307,38 @@ def _observation(
                 bootstrap.APPLY_DEFINITION_SHA256 if exact else None
             ),
             "foundation_exact": exact,
-            "helper_absent": True,
-            "helper_same_name_count": 0,
+            "helper_absent": helper_absent,
+            "helper_same_name_count": helper_same_name_count,
             "observed_at_unix": observed_at_unix,
         },
         "observation_sha256",
     )
+
+
+@pytest.mark.parametrize("phase", ("before_install", "after_install"))
+def test_observation_accepts_one_routeback_helper_for_exact_replay(
+    phase: str,
+) -> None:
+    value = _observation(
+        phase=phase,
+        state="exact_installed",
+        session_user_sha256=_digest("control-admin"),
+        control_admin_count=1,
+        membership_count=0,
+        observed_at_unix=NOW,
+    )
+    unsigned = {
+        key: item for key, item in value.items() if key != "observation_sha256"
+    }
+    unsigned["helper_absent"] = False
+    unsigned["helper_same_name_count"] = 1
+    replay = _hashed(unsigned, "observation_sha256")
+
+    assert bootstrap._validate_observation(
+        replay,
+        phase=phase,
+        allow_routeback_helper_present=True,
+    ) == replay
 
 
 def _intermediate(
@@ -287,6 +347,8 @@ def _intermediate(
     *,
     initial_state: str = "absent",
     provider_forward_role_count: int = 1,
+    materialized_creator_edge: bool = True,
+    replay_creator_edge: bool = False,
 ) -> dict[str, Any]:
     session_hash = gate["temporary_control_admin_username_sha256"]
     before = _observation(
@@ -294,7 +356,9 @@ def _intermediate(
         state=initial_state,
         session_user_sha256=session_hash,
         control_admin_count=1,
-        membership_count=0,
+        membership_count=(
+            1 if initial_state == "exact_installed" and replay_creator_edge else 0
+        ),
         observed_at_unix=960,
         provider_forward_role_count=provider_forward_role_count,
     )
@@ -303,7 +367,15 @@ def _intermediate(
         state="exact_installed",
         session_user_sha256=session_hash,
         control_admin_count=1,
-        membership_count=1 if initial_state == "absent" else 0,
+        membership_count=(
+            1
+            if (
+                initial_state == "absent" and materialized_creator_edge
+            ) or (
+                initial_state == "exact_installed" and replay_creator_edge
+            )
+            else 0
+        ),
         observed_at_unix=970,
         provider_forward_role_count=provider_forward_role_count,
     )
@@ -496,6 +568,51 @@ def test_gate_binds_exact_runtime_constants_and_control_contract() -> None:
             _validate_gate(changed)
 
 
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    (
+        ("database_roles_requested", ["cloudsqlsuperuser"]),
+        (
+            "database_roles_requested",
+            [
+                *bootstrap.CONTROL_ADMIN_DATABASE_ROLES,
+                "canonical_brain_schema_reconciler",
+            ],
+        ),
+        ("resource_etag_sha256", "not-a-sha256"),
+    ),
+)
+def test_owner_install_rejects_unfenced_or_inexact_control_authority(
+    field: str,
+    replacement: Any,
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    authority = _cloud_authority(gate)
+    authority[field] = replacement
+    authority = _hashed(
+        {
+            name: value
+            for name, value in authority.items()
+            if name != "receipt_sha256"
+        },
+        "receipt_sha256",
+    )
+
+    with pytest.raises(
+        bootstrap.ControlBootstrapError,
+        match="schema_reconciliation_control_cloud_authority_invalid",
+    ):
+        bootstrap.build_owner_install_claim(
+            gate=gate,
+            cloud_sql_authority_receipt=authority,
+            credential_length=bootstrap.OPAQUE_CREDENTIAL_BYTES,
+            issued_at_unix=950,
+            expires_at_unix=1_050,
+            nonce_sha256=_digest("install-nonce"),
+        )
+
+
 def test_fixed_observation_rejects_third_routine_and_nonroutine_objects() -> None:
     sql = bootstrap._FOUNDATION_OBSERVATION_SQL
     assert "pg_advisory_xact_lock" not in sql
@@ -613,7 +730,7 @@ def test_observation_validator_rejects_rehashed_session_boundary_tamper(
     (
         (("before_observation", "session_user_sha256"), _digest("wrong-user")),
         (("after_observation", "control_admin_count"), 0),
-        (("after_observation", "executor_membership_count"), 0),
+        (("after_observation", "executor_membership_count"), 2),
     ),
 )
 def test_intermediate_binds_admin_session_and_creator_edge(
@@ -650,6 +767,175 @@ def test_intermediate_binds_admin_session_and_creator_edge(
     with pytest.raises(bootstrap.ControlBootstrapError):
         bootstrap.validate_intermediate_for_owner(
             changed,
+            gate=gate,
+            install_claim=install,
+            now_unix=NOW,
+        )
+
+
+def test_intermediate_accepts_cloud_sql_unmaterialized_creator_authority() -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    install = _signed_install(key, gate)
+    intermediate = _intermediate(
+        gate,
+        install,
+        materialized_creator_edge=False,
+    )
+
+    assert bootstrap.validate_intermediate_for_owner(
+        intermediate,
+        gate=gate,
+        install_claim=install,
+        now_unix=NOW,
+    ) == intermediate
+
+
+@pytest.mark.parametrize(
+    ("future_seconds", "accepted"),
+    ((2, True), (6, False)),
+)
+def test_owner_intermediate_tolerates_only_bounded_remote_clock_skew(
+    future_seconds: int,
+    accepted: bool,
+) -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    install = _signed_install(key, gate)
+    intermediate = _intermediate(gate, install)
+    intermediate["observed_at_unix"] = NOW + future_seconds
+    intermediate = _hashed(
+        {
+            name: value
+            for name, value in intermediate.items()
+            if name != "intermediate_sha256"
+        },
+        "intermediate_sha256",
+    )
+
+    def validate() -> Mapping[str, Any]:
+        return bootstrap.validate_intermediate_for_owner(
+            intermediate,
+            gate=gate,
+            install_claim=install,
+            now_unix=NOW,
+        )
+
+    if accepted:
+        assert validate() == intermediate
+    else:
+        with pytest.raises(
+            bootstrap.ControlBootstrapError,
+            match="schema_reconciliation_control_intermediate_invalid",
+        ):
+            validate()
+
+
+def test_intermediate_accepts_exact_replay_creator_edge_until_cleanup() -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    install = _signed_install(key, gate)
+    intermediate = _intermediate(
+        gate,
+        install,
+        initial_state="exact_installed",
+        replay_creator_edge=True,
+    )
+
+    assert intermediate["mutation_applied"] is False
+    assert intermediate["before_observation"]["executor_membership_count"] == 1
+    assert intermediate["after_observation"]["executor_membership_count"] == 1
+    assert bootstrap.validate_intermediate_for_owner(
+        intermediate,
+        gate=gate,
+        install_claim=install,
+        now_unix=NOW,
+    ) == intermediate
+
+
+def test_intermediate_accepts_exact_routeback_helper_replay_until_cleanup() -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    install = _signed_install(key, gate)
+    intermediate = _intermediate(
+        gate,
+        install,
+        initial_state="exact_installed",
+        replay_creator_edge=True,
+    )
+    for name in ("before_observation", "after_observation"):
+        observation = intermediate[name]
+        observation["helper_absent"] = False
+        observation["helper_same_name_count"] = 1
+        observation.update(
+            _hashed(
+                {
+                    field: value
+                    for field, value in observation.items()
+                    if field != "observation_sha256"
+                },
+                "observation_sha256",
+            )
+        )
+        intermediate[
+            f"{name.removesuffix('_observation')}_observation_sha256"
+        ] = observation["observation_sha256"]
+    intermediate = _hashed(
+        {
+            name: value
+            for name, value in intermediate.items()
+            if name != "intermediate_sha256"
+        },
+        "intermediate_sha256",
+    )
+
+    assert bootstrap.validate_intermediate_for_owner(
+        intermediate,
+        gate=gate,
+        install_claim=install,
+        now_unix=NOW,
+    ) == intermediate
+
+
+def test_intermediate_rejects_exact_replay_creator_edge_drift() -> None:
+    key = Ed25519PrivateKey.generate()
+    gate = _gate(key)
+    install = _signed_install(key, gate)
+    intermediate = _intermediate(
+        gate,
+        install,
+        initial_state="exact_installed",
+        replay_creator_edge=True,
+    )
+    after = intermediate["after_observation"]
+    after["executor_membership_count"] = 0
+    after["control_admin_forward_role_count"] -= 1
+    after.update(
+        _hashed(
+            {
+                name: value
+                for name, value in after.items()
+                if name != "observation_sha256"
+            },
+            "observation_sha256",
+        )
+    )
+    intermediate["after_observation_sha256"] = after["observation_sha256"]
+    intermediate = _hashed(
+        {
+            name: value
+            for name, value in intermediate.items()
+            if name != "intermediate_sha256"
+        },
+        "intermediate_sha256",
+    )
+
+    with pytest.raises(
+        bootstrap.ControlBootstrapError,
+        match="schema_reconciliation_control_intermediate_invalid",
+    ):
+        bootstrap.validate_intermediate_for_owner(
+            intermediate,
             gate=gate,
             install_claim=install,
             now_unix=NOW,
@@ -705,6 +991,45 @@ def test_terminal_binds_fresh_writer_observation_after_cleanup() -> None:
             )
 
 
+@pytest.mark.parametrize(
+    ("future_seconds", "accepted"),
+    ((2, True), (6, False)),
+)
+def test_owner_terminal_tolerates_only_bounded_remote_clock_skew(
+    future_seconds: int,
+    accepted: bool,
+) -> None:
+    _key, gate, install, intermediate, cleanup, terminal = _protocol_fixture()
+    terminal["completed_at_unix"] = NOW + future_seconds
+    terminal = _hashed(
+        {
+            name: value
+            for name, value in terminal.items()
+            if name != "terminal_sha256"
+        },
+        "terminal_sha256",
+    )
+
+    def validate() -> Mapping[str, Any]:
+        return bootstrap.validate_terminal_for_owner(
+            terminal,
+            gate=gate,
+            install_claim=install,
+            intermediate=intermediate,
+            cleanup_claim=cleanup,
+            now_unix=NOW,
+        )
+
+    if accepted:
+        assert validate() == terminal
+    else:
+        with pytest.raises(
+            bootstrap.ControlBootstrapError,
+            match="schema_reconciliation_control_terminal_invalid",
+        ):
+            validate()
+
+
 def test_provider_managed_forward_role_closure_is_preserved_across_protocol() -> None:
     key = Ed25519PrivateKey.generate()
     gate = _gate(key)
@@ -722,10 +1047,10 @@ def test_provider_managed_forward_role_closure_is_preserved_across_protocol() ->
     ) == intermediate
     assert intermediate["before_observation"][
         "control_admin_forward_role_count"
-    ] == 5
+    ] == 6
     assert intermediate["after_observation"][
         "control_admin_forward_role_count"
-    ] == 6
+    ] == 7
 
     cleanup = _signed_cleanup(key, gate, install, intermediate)
     terminal = _terminal(gate, install, intermediate, cleanup)
@@ -866,6 +1191,97 @@ def test_fixed_observation_parser_binds_authenticated_session_and_exact_shape() 
     assert session.closed is False
 
 
+def test_schema_upgrade_replay_accepts_only_one_target_routeback_helper() -> None:
+    values = {
+        "database_name": bootstrap.foundation.SQL_DATABASE,
+        "version_num": "180002",
+        "session_user_name": bootstrap.foundation.SQL_USER,
+        "control_admin_count": "0",
+        "control_admin_identity_exact": "false",
+        "control_admin_attributes_exact": "false",
+        "control_admin_attributes_mask": "0",
+        "control_admin_memberships_exact": "false",
+        "control_admin_memberships_mask": "0",
+        "control_admin_forward_roles_exact": "false",
+        "control_admin_role_exact": "false",
+        "control_admin_forward_role_count": "0",
+        "provider_forward_role_count": "1",
+        "control_admin_owned_object_count": "0",
+        "control_admin_shared_dependency_count": "0",
+        "foreign_client_session_count": "0",
+        "max_prepared_transactions": "0",
+        "cluster_prepared_xact_count": "0",
+        "non_template_database_inventory_exact": "true",
+        "all_connectable_database_inventory_exact": "true",
+        "latent_provider_exception_exact": "true",
+        "executor_database_effective_privileges_exact": "true",
+        "migration_owner_role_exact": "true",
+        "current_database_owner_exact": "true",
+        "executor_membership_count": "0",
+        "executor_owned_object_count": "0",
+        "executor_acl_dependency_count": "4",
+        "observer_prosrc_sha256": bootstrap.OBSERVER_PROSRC_SHA256,
+        "observer_definition_sha256": bootstrap.OBSERVER_DEFINITION_SHA256,
+        "apply_prosrc_sha256": bootstrap.APPLY_PROSRC_SHA256,
+        "apply_definition_sha256": bootstrap.APPLY_DEFINITION_SHA256,
+        "foundation_state": "drift",
+        "foundation_exact": "false",
+        "helper_absent": "false",
+        "helper_same_name_count": "1",
+    }
+    result = QueryResult(
+        bootstrap._FOUNDATION_OBSERVATION_COLUMNS,
+        (tuple(values[name] for name in bootstrap._FOUNDATION_OBSERVATION_COLUMNS),),
+        "COMMIT",
+    )
+    session = type(
+        "Session",
+        (),
+        {"username": bootstrap.foundation.SQL_USER},
+    )()
+
+    with pytest.raises(
+        bootstrap.ControlBootstrapError,
+        match="schema_reconciliation_control_routeback_helper_present",
+    ):
+        bootstrap._parse_foundation_observation_result(
+            session,
+            result,
+            phase="post_cleanup",
+            observed_at_unix=NOW,
+        )
+
+    receipt = bootstrap._parse_foundation_observation_result(
+        session,
+        result,
+        phase="post_cleanup",
+        observed_at_unix=NOW,
+        allow_routeback_helper_present=True,
+    )
+    assert receipt["state"] == "exact_installed"
+    assert receipt["foundation_exact"] is True
+    assert receipt["helper_absent"] is False
+    assert receipt["helper_same_name_count"] == 1
+
+    values["helper_same_name_count"] = "2"
+    duplicate_result = QueryResult(
+        bootstrap._FOUNDATION_OBSERVATION_COLUMNS,
+        (tuple(values[name] for name in bootstrap._FOUNDATION_OBSERVATION_COLUMNS),),
+        "COMMIT",
+    )
+    with pytest.raises(
+        bootstrap.ControlBootstrapError,
+        match="schema_reconciliation_control_routeback_helper_present",
+    ):
+        bootstrap._parse_foundation_observation_result(
+            session,
+            duplicate_result,
+            phase="post_cleanup",
+            observed_at_unix=NOW,
+            allow_routeback_helper_present=True,
+        )
+
+
 @pytest.mark.parametrize(
     ("replacement", "expected_code"),
     (
@@ -893,10 +1309,10 @@ def test_fixed_observation_parser_binds_authenticated_session_and_exact_shape() 
             {"control_admin_count": "0"},
             "schema_reconciliation_control_admin_count_drifted",
         ),
-        (
-            {"control_admin_forward_role_count": "2"},
-            "schema_reconciliation_control_admin_role_closure_drifted",
-        ),
+            (
+                {"control_admin_forward_role_count": "3"},
+                "schema_reconciliation_control_admin_role_closure_drifted",
+            ),
         (
             {"control_admin_owned_object_count": "1"},
             "schema_reconciliation_control_admin_owned_objects_present",
@@ -965,7 +1381,7 @@ def test_fixed_observation_reports_secret_free_structural_drift_code(
         ),
         "control_admin_forward_roles_exact": "true",
         "control_admin_role_exact": "true",
-        "control_admin_forward_role_count": "1",
+        "control_admin_forward_role_count": "2",
         "provider_forward_role_count": "1",
         "control_admin_owned_object_count": "0",
         "control_admin_shared_dependency_count": "0",
@@ -1131,41 +1547,76 @@ def test_fixed_observation_reports_secret_free_structural_drift_code(
             "control_admin_memberships_mask",
             bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
             6,
-            "schema_reconciliation_control_admin_executor_edge_drifted",
+            "schema_reconciliation_control_admin_owner_edge_drifted",
         ),
         (
             "control_admin_memberships_exact",
             "control_admin_memberships_mask",
             bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
             7,
-            "schema_reconciliation_control_admin_executor_grantor_drifted",
+            "schema_reconciliation_control_admin_owner_grantor_drifted",
         ),
         (
             "control_admin_memberships_exact",
             "control_admin_memberships_mask",
             bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
             8,
-            "schema_reconciliation_control_admin_executor_admin_drifted",
+            "schema_reconciliation_control_admin_owner_admin_drifted",
         ),
         (
             "control_admin_memberships_exact",
             "control_admin_memberships_mask",
             bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
             9,
-            "schema_reconciliation_control_admin_executor_inherit_drifted",
+            "schema_reconciliation_control_admin_owner_inherit_drifted",
         ),
         (
             "control_admin_memberships_exact",
             "control_admin_memberships_mask",
             bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
             10,
-            "schema_reconciliation_control_admin_executor_set_drifted",
+            "schema_reconciliation_control_admin_owner_set_drifted",
         ),
         (
             "control_admin_memberships_exact",
             "control_admin_memberships_mask",
             bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
             11,
+            "schema_reconciliation_control_admin_executor_edge_drifted",
+        ),
+        (
+            "control_admin_memberships_exact",
+            "control_admin_memberships_mask",
+            bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
+            12,
+            "schema_reconciliation_control_admin_executor_grantor_drifted",
+        ),
+        (
+            "control_admin_memberships_exact",
+            "control_admin_memberships_mask",
+            bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
+            13,
+            "schema_reconciliation_control_admin_executor_admin_drifted",
+        ),
+        (
+            "control_admin_memberships_exact",
+            "control_admin_memberships_mask",
+            bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
+            14,
+            "schema_reconciliation_control_admin_executor_inherit_drifted",
+        ),
+        (
+            "control_admin_memberships_exact",
+            "control_admin_memberships_mask",
+            bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
+            15,
+            "schema_reconciliation_control_admin_executor_set_drifted",
+        ),
+        (
+            "control_admin_memberships_exact",
+            "control_admin_memberships_mask",
+            bootstrap._CONTROL_ADMIN_MEMBERSHIPS_EXACT_MASK,
+            16,
             "schema_reconciliation_control_admin_unexpected_role_edge",
         ),
     ),
@@ -1195,7 +1646,7 @@ def test_fixed_observation_reports_exact_admin_role_component(
             ),
             "control_admin_forward_roles_exact": "true",
             "control_admin_role_exact": "true",
-            "control_admin_forward_role_count": "1",
+            "control_admin_forward_role_count": "2",
             "provider_forward_role_count": "1",
             "non_template_database_inventory_exact": "true",
             "all_connectable_database_inventory_exact": "true",
@@ -1376,7 +1827,9 @@ def test_runtime_install_closes_broad_session_before_intermediate(
         *,
         phase: str,
         observed_at_unix: Any,
+        allow_routeback_helper_present: bool = False,
     ) -> Mapping[str, Any]:
+        assert allow_routeback_helper_present is True
         events.append(phase)
         captured_at = (
             observed_at_unix()
@@ -1423,6 +1876,80 @@ def test_runtime_install_closes_broad_session_before_intermediate(
     ) == intermediate
 
 
+def test_runtime_install_replay_defers_full_contract_until_admin_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _key, gate, install, _intermediate_value, _cleanup, _terminal_value = (
+        _protocol_fixture()
+    )
+    events: list[str] = []
+    times = iter((960, 970, 980, 990, 1_000))
+    context = bootstrap._ControlRuntimeContext(
+        base=types.SimpleNamespace(
+            dependencies=types.SimpleNamespace(now=lambda: next(times))
+        ),
+        gate=gate,
+        install_artifact=types.SimpleNamespace(),
+    )
+
+    class Session:
+        def close(self) -> None:
+            events.append("control-close")
+
+    monkeypatch.setattr(bootstrap, "_revalidate_stopped", lambda *_: None)
+    monkeypatch.setattr(
+        bootstrap,
+        "_open_control_session",
+        lambda *_args: Session(),
+    )
+
+    def observe(
+        _session: Any,
+        *,
+        phase: str,
+        observed_at_unix: Any,
+        allow_routeback_helper_present: bool = False,
+    ) -> Mapping[str, Any]:
+        assert allow_routeback_helper_present is True
+        return _observation(
+            phase=phase,
+            state="exact_installed",
+            session_user_sha256=gate[
+                "temporary_control_admin_username_sha256"
+            ],
+            control_admin_count=1,
+            membership_count=0,
+            observed_at_unix=observed_at_unix(),
+            helper_absent=False,
+            helper_same_name_count=1,
+        )
+
+    monkeypatch.setattr(bootstrap, "_observe_foundation", observe)
+    monkeypatch.setattr(
+        bootstrap,
+        "_require_exact_target_helper_replay",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("full contract must wait for admin cleanup")
+        ),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "_execute_install_artifact",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("replay must remain read-only")
+        ),
+    )
+    intermediate = bootstrap._runtime_install_callback(
+        context,
+        gate,
+        install,
+        bytearray(CREDENTIAL),
+    )
+    assert intermediate["initial_foundation_state"] == "exact_installed"
+    assert intermediate["mutation_applied"] is False
+    assert events == ["control-close"]
+
+
 def test_runtime_install_rejects_claim_expired_during_before_observation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1457,8 +1984,10 @@ def test_runtime_install_rejects_claim_expired_during_before_observation(
         *,
         phase: str,
         observed_at_unix: Any,
+        allow_routeback_helper_present: bool = False,
     ) -> Mapping[str, Any]:
         assert phase == "before_install"
+        assert allow_routeback_helper_present is True
         captured_at = observed_at_unix()
         return _observation(
             phase=phase,
@@ -1505,11 +2034,21 @@ def test_runtime_post_cleanup_uses_fresh_fixed_writer_then_closes(
 
     session = Session()
     config = types.SimpleNamespace(user=bootstrap.foundation.SQL_USER)
-    times = iter((990, 995))
+    target_sha256 = _digest("target-contract")
+    target = types.SimpleNamespace(
+        attestation=object(),
+        sha256=target_sha256,
+    )
+    managed_hba_receipt = object()
+    times = iter((990, 992, 995))
     base = types.SimpleNamespace(
+        target=target,
         dependencies=types.SimpleNamespace(
             now=lambda: next(times),
             writer_config=lambda: config,
+            collect_hba=lambda *_args, **_kwargs: (
+                events.append("writer-hba") or managed_hba_receipt
+            ),
             open_session=lambda value: (
                 events.append("writer-open") or session
                 if value is config
@@ -1535,7 +2074,9 @@ def test_runtime_post_cleanup_uses_fresh_fixed_writer_then_closes(
         *,
         phase: str,
         observed_at_unix: Any,
+        allow_routeback_helper_present: bool = False,
     ) -> Mapping[str, Any]:
+        assert allow_routeback_helper_present is True
         events.append("writer-observe")
         captured_at = (
             observed_at_unix()
@@ -1551,9 +2092,30 @@ def test_runtime_post_cleanup_uses_fresh_fixed_writer_then_closes(
             control_admin_count=0,
             membership_count=0,
             observed_at_unix=captured_at,
+            helper_absent=False,
+            helper_same_name_count=1,
         )
 
     monkeypatch.setattr(bootstrap, "_observe_foundation", observe)
+    policy = object()
+    monkeypatch.setattr(bootstrap, "_target_policy", lambda value: policy)
+
+    def collect(
+        contract_session: Any,
+        *,
+        config: Any,
+        policy: Any,
+        managed_hba_receipt: Any,
+        subject_user: str,
+    ) -> Any:
+        assert contract_session is session
+        assert config is base.dependencies.writer_config()
+        assert managed_hba_receipt is not None
+        assert subject_user == bootstrap.foundation.SQL_USER
+        events.append("writer-contract")
+        return types.SimpleNamespace(sha256=target_sha256)
+
+    monkeypatch.setattr(bootstrap, "collect_schema_contract", collect)
     terminal = bootstrap._runtime_post_cleanup_callback(
         context,
         gate,
@@ -1565,6 +2127,8 @@ def test_runtime_post_cleanup_uses_fresh_fixed_writer_then_closes(
         "stopped",
         "writer-open",
         "writer-observe",
+        "writer-hba",
+        "writer-contract",
         "writer-close",
         "stopped",
     ]
@@ -1576,6 +2140,154 @@ def test_runtime_post_cleanup_uses_fresh_fixed_writer_then_closes(
         cleanup_claim=cleanup,
         now_unix=NOW,
     ) == terminal
+
+
+def test_runtime_routeback_helper_replay_requires_exact_target_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_sha256 = _digest("target-contract")
+    config = types.SimpleNamespace(user=bootstrap.foundation.SQL_USER)
+    target = types.SimpleNamespace(
+        attestation=object(),
+        sha256=target_sha256,
+    )
+    managed_hba_receipt = object()
+    hba_calls: list[tuple[Any, int, int]] = []
+
+    def collect_hba(
+        writer_config: Any,
+        *,
+        now_unix: int,
+        ttl_seconds: int,
+    ) -> Any:
+        hba_calls.append((writer_config, now_unix, ttl_seconds))
+        return managed_hba_receipt
+
+    base = types.SimpleNamespace(
+        target=target,
+        dependencies=types.SimpleNamespace(
+            writer_config=lambda: config,
+            collect_hba=collect_hba,
+            now=lambda: NOW,
+        ),
+    )
+    context = bootstrap._ControlRuntimeContext(
+        base=base,
+        gate={},
+        install_artifact=types.SimpleNamespace(),
+    )
+    observation = {
+        "helper_absent": False,
+        "helper_same_name_count": 1,
+    }
+    policy = object()
+    calls: list[tuple[Any, Any, Any, Any, Any]] = []
+    monkeypatch.setattr(bootstrap, "_target_policy", lambda value: policy)
+
+    def collect(
+        session: Any,
+        *,
+        config: Any,
+        policy: Any,
+        managed_hba_receipt: Any,
+        subject_user: str,
+    ) -> Any:
+        calls.append(
+            (session, config, policy, managed_hba_receipt, subject_user)
+        )
+        return types.SimpleNamespace(sha256=target_sha256)
+
+    monkeypatch.setattr(bootstrap, "collect_schema_contract", collect)
+    session = types.SimpleNamespace(username=config.user)
+    bootstrap._require_exact_target_helper_replay(
+        context,
+        session,
+        observation,
+    )
+    assert hba_calls == [(config, NOW, 300)]
+    assert calls == [
+        (session, config, policy, managed_hba_receipt, config.user)
+    ]
+
+    monkeypatch.setattr(
+        bootstrap,
+        "collect_schema_contract",
+        lambda *_args, **_kwargs: types.SimpleNamespace(sha256=_digest("drift")),
+    )
+    with pytest.raises(
+        bootstrap.ControlBootstrapError,
+        match=(
+            "schema_reconciliation_control_routeback_contract_mismatch"
+        ),
+    ):
+        bootstrap._require_exact_target_helper_replay(
+            context,
+            session,
+            observation,
+        )
+
+
+def test_runtime_routeback_helper_replay_rejects_temporary_control_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target_sha256 = _digest("target-contract")
+    config = types.SimpleNamespace(user=bootstrap.foundation.SQL_USER)
+    target = types.SimpleNamespace(
+        attestation=object(),
+        sha256=target_sha256,
+    )
+    base = types.SimpleNamespace(
+        target=target,
+        dependencies=types.SimpleNamespace(
+            writer_config=lambda: config,
+        ),
+    )
+    context = bootstrap._ControlRuntimeContext(
+        base=base,
+        gate={},
+        install_artifact=types.SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "collect_schema_contract",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("temporary control session must never collect contract")
+        ),
+    )
+    temporary_control_session = types.SimpleNamespace(
+        username="muncho_canary_control_0123456789abcdef"
+    )
+    with pytest.raises(
+        bootstrap.ControlBootstrapError,
+        match="schema_reconciliation_control_routeback_writer_boundary_invalid",
+    ):
+        bootstrap._require_exact_target_helper_replay(
+            context,
+            temporary_control_session,
+            {"helper_absent": False, "helper_same_name_count": 1},
+        )
+
+
+def test_runtime_helper_absence_never_collects_target_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = bootstrap._ControlRuntimeContext(
+        base=types.SimpleNamespace(),
+        gate={},
+        install_artifact=types.SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        bootstrap,
+        "collect_schema_contract",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("collector must remain unused")
+        ),
+    )
+    bootstrap._require_exact_target_helper_replay(
+        context,
+        object(),
+        {"helper_absent": True, "helper_same_name_count": 0},
+    )
 
 
 def test_install_failure_receipt_binds_accepted_install_claim() -> None:

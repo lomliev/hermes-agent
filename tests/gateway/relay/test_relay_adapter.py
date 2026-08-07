@@ -1,5 +1,7 @@
 """RelayAdapter capability-advertisement tests (relay Phase 1, Task 1.1)."""
 
+import asyncio
+
 import pytest
 
 from gateway.config import Platform, PlatformConfig
@@ -92,6 +94,41 @@ class _CaptureTransport:
         self.sent = action
         self.sent_platform = platform
         return {"success": True, "message_id": "m1"}
+
+
+@pytest.mark.asyncio
+async def test_send_for_platform_preserves_uncertain_connector_result():
+    """Release reconciliation depends on the connector uncertainty signal."""
+    transport = _CaptureTransport()
+    transport._identities = [("discord", "release-edge")]
+
+    async def uncertain_send(action, *, platform=None):
+        transport.sent = action
+        transport.sent_platform = platform
+        return {
+            "success": False,
+            "error": "connector response lost",
+            "retryable": True,
+            "retry_after": 1.5,
+            "error_kind": "dispatch_uncertain",
+        }
+
+    transport.send_outbound = uncertain_send
+    adapter = RelayAdapter(
+        PlatformConfig(), make_desc(platform="discord"), transport=transport
+    )
+
+    result = await adapter.send_for_platform(
+        Platform.DISCORD,
+        "channel-1",
+        "release summary",
+        metadata={"scope_id": "guild-1"},
+    )
+
+    assert result.success is False
+    assert result.retryable is True
+    assert result.retry_after == 1.5
+    assert result.error_kind == "dispatch_uncertain"
 
 
 def _make_event(chat_id="chan-1", scope_id="scope-9"):
@@ -274,3 +311,47 @@ async def test_get_chat_info_local_fallback_when_not_advertised():
     info = await a.get_chat_info("chan-1")
     assert info == {"name": "chan-1", "type": "dm"}
     assert t.calls == []
+
+
+class _HangOnIdleTransport:
+    """Transport that hangs in go_idle so outer disconnect cancellation can race it."""
+
+    def __init__(self):
+        self.go_idle_started = asyncio.Event()
+        self.go_idle_timeouts: list[float] = []
+        self.disconnect_calls = 0
+
+    def set_inbound_handler(self, h):  # noqa: D401
+        self._h = h
+
+    async def go_idle(self, timeout_s: float = 10.0):
+        self.go_idle_timeouts.append(timeout_s)
+        self.go_idle_started.set()
+        await asyncio.sleep(3600)
+        return False
+
+    async def disconnect(self):
+        self.disconnect_calls += 1
+
+
+@pytest.mark.asyncio
+async def test_disconnect_tears_down_transport_when_go_idle_is_cancelled():
+    """Runner disconnect budgets can cancel adapter.disconnect mid go_idle.
+
+    The gateway runner's default adapter disconnect budget is 5s, while
+    transport.go_idle defaults to 10s. If cancellation lands during the idle
+    handshake, transport.disconnect must still run so the websocket/supervisor
+    cannot outlive the adapter.
+    """
+    transport = _HangOnIdleTransport()
+    adapter = RelayAdapter(PlatformConfig(), make_desc(platform="discord"), transport=transport)
+
+    task = asyncio.create_task(adapter.disconnect())
+    await asyncio.wait_for(transport.go_idle_started.wait(), timeout=1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert transport.disconnect_calls == 1
+    assert transport.go_idle_timeouts
+    assert transport.go_idle_timeouts[0] < 5.0

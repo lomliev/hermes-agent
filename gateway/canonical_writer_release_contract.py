@@ -17,11 +17,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from gateway.canonical_boot_identity import SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE
+
 
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
 UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v3"
 RELEASE_MANIFEST_NAME = "release-manifest.json"
 MAX_RELEASE_MANIFEST_BYTES = 8 * 1024 * 1024
+# One sealed release may contain large, immutable runtime dependencies such as
+# Chromium.  Every writer-side manifest verifier must share this bound; a
+# smaller verifier-local limit can reject a release that the authoritative
+# root collector already accepts.
+MAX_RELEASE_FILE_BYTES = 4 * 1024 * 1024 * 1024
 INCOMPLETE_MARKER_NAME = ".release-build-incomplete"
 WRITER_MODULE = "gateway.canonical_writer_bootstrap"
 GATEWAY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
@@ -283,6 +290,79 @@ def _fixed_service_environment(*, user: str, home: str) -> list[str]:
     ]
 
 
+def render_phase_b_readiness_service(
+    *,
+    revision: str,
+    artifact_root: str | os.PathLike[str],
+    artifact_sha256: str,
+) -> str:
+    """Render the fixed Phase-B unit from its sealed release bindings."""
+
+    if not isinstance(revision, str) or _REVISION_RE.fullmatch(revision) is None:
+        raise ValueError("release manifest revision is invalid")
+    if (
+        not isinstance(artifact_sha256, str)
+        or _SHA256_RE.fullmatch(artifact_sha256) is None
+    ):
+        raise ValueError("release artifact digest is invalid")
+    release_root = _absolute_normalized_path(
+        artifact_root,
+        "manifest artifact root",
+    )
+    if (
+        release_root.parent != DEFAULT_RELEASE_BASE
+        or release_root.name != revision
+    ):
+        raise ValueError("release path is not revision-addressed")
+    interpreter = release_root / "venv/bin/python"
+    readiness_hardening = [
+        line
+        for line in _common_hardening(address_families="AF_UNIX AF_INET AF_INET6")
+        if line
+        not in {
+            "CapabilityBoundingSet=",
+            "AmbientCapabilities=",
+            "ProcSubset=pid",
+        }
+    ]
+    lines = [
+        "# Fixed root read-only collector for Canonical Writer Phase-B readiness.",
+        f"# ArtifactSHA256={artifact_sha256}",
+        "[Unit]",
+        "Description=Muncho Canonical Writer Phase-B readiness (fixed root oneshot)",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        f"Before={WRITER_UNIT_NAME}",
+        "AssertPathIsDirectory=/etc/muncho/canonical-writer-phase-b",
+        "AssertPathIsDirectory=/var/lib/muncho/canonical-writer-phase-b",
+        "AssertPathExists=/etc/muncho/trust/cloudsql-server-ca.pem",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "User=root",
+        "Group=root",
+        f"WorkingDirectory={release_root}",
+        f"ExecStart={interpreter} -B -I -m {PHASE_B_READINESS_MODULE}",
+        "RemainAfterExit=yes",
+        "TimeoutStartSec=120s",
+        "TimeoutStopSec=15s",
+        "KillMode=mixed",
+        "LimitCORE=0",
+        *_fixed_service_environment(user="root", home="/root"),
+        *readiness_hardening,
+        "CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
+        "AmbientCapabilities=",
+        f"BindReadOnlyPaths={release_root}",
+        "ReadOnlyPaths=/etc/muncho/canonical-writer-phase-b",
+        "ReadOnlyPaths=/etc/muncho/trust/cloudsql-server-ca.pem",
+        "ReadWritePaths=/var/lib/muncho/canonical-writer-phase-b",
+        "ReadWritePaths=/var/lib/muncho/canonical-writer-phase-b-readiness",
+        "StandardOutput=journal",
+        "StandardError=journal",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def render_systemd_units(
     manifest: ReleaseManifest,
     spec: WriterOnlyUnitSpec,
@@ -369,6 +449,7 @@ def render_systemd_units(
         "TimeoutStopSec=30s",
         "KillMode=mixed",
         "LimitCORE=0",
+        SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE,
         *_fixed_service_environment(user=spec.writer_user, home="/nonexistent"),
         *_common_hardening(address_families="AF_UNIX AF_INET AF_INET6"),
         "IPAddressDeny=any",
@@ -380,53 +461,6 @@ def render_systemd_units(
         "",
         "[Install]",
         "WantedBy=multi-user.target",
-    ]
-    readiness_hardening = [
-        line
-        for line in _common_hardening(address_families="AF_UNIX AF_INET AF_INET6")
-        if line
-        not in {
-            "CapabilityBoundingSet=",
-            "AmbientCapabilities=",
-            "ProcSubset=pid",
-        }
-    ]
-    phase_b_readiness_lines = [
-        "# Fixed root read-only collector for Canonical Writer Phase-B readiness.",
-        f"# ArtifactSHA256={manifest.artifact_sha256}",
-        "[Unit]",
-        "Description=Muncho Canonical Writer Phase-B readiness (fixed root oneshot)",
-        "After=network-online.target",
-        "Wants=network-online.target",
-        f"Before={WRITER_UNIT_NAME}",
-        "AssertPathIsDirectory=/etc/muncho/canonical-writer-phase-b",
-        "AssertPathIsDirectory=/var/lib/muncho/canonical-writer-phase-b",
-        "AssertPathExists=/etc/muncho/trust/cloudsql-server-ca.pem",
-        "",
-        "[Service]",
-        "Type=oneshot",
-        "User=root",
-        "Group=root",
-        f"WorkingDirectory={release_root}",
-        (
-            f"ExecStart={interpreter} -B -I -m {PHASE_B_READINESS_MODULE}"
-        ),
-        "RemainAfterExit=yes",
-        "TimeoutStartSec=120s",
-        "TimeoutStopSec=15s",
-        "KillMode=mixed",
-        "LimitCORE=0",
-        *_fixed_service_environment(user="root", home="/root"),
-        *readiness_hardening,
-        "CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
-        "AmbientCapabilities=",
-        f"BindReadOnlyPaths={release_root}",
-        "ReadOnlyPaths=/etc/muncho/canonical-writer-phase-b",
-        "ReadOnlyPaths=/etc/muncho/trust/cloudsql-server-ca.pem",
-        "ReadWritePaths=/var/lib/muncho/canonical-writer-phase-b",
-        "ReadWritePaths=/var/lib/muncho/canonical-writer-phase-b-readiness",
-        "StandardOutput=journal",
-        "StandardError=journal",
     ]
     gateway_lines = [
         "# Generated from a digest-bound writer-only release; do not edit.",
@@ -455,6 +489,7 @@ def render_systemd_units(
         "TimeoutStopSec=30s",
         "KillMode=mixed",
         "LimitCORE=0",
+        SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE,
         *_fixed_service_environment(
             user=spec.gateway_user,
             home=str(spec.gateway_home),
@@ -482,6 +517,10 @@ def render_systemd_units(
         "",
         "[Service]",
         "Type=oneshot",
+        # Keep the successful invocation queryable until activation captures its
+        # exact journal identity.  The activation executor stops and removes this
+        # temporary unit in its mandatory cleanup path.
+        "RemainAfterExit=yes",
         f"User={spec.writer_user}",
         f"Group={spec.writer_group}",
         f"SupplementaryGroups={spec.projector_group}",
@@ -533,18 +572,28 @@ def render_systemd_units(
         ),
     ]
     writer = "\n".join(writer_lines) + "\n"
-    phase_b_readiness = "\n".join(phase_b_readiness_lines) + "\n"
+    phase_b_readiness = render_phase_b_readiness_service(
+        revision=manifest.revision,
+        artifact_root=release_root,
+        artifact_sha256=manifest.artifact_sha256,
+    )
     gateway = "\n".join(gateway_lines) + "\n"
     exporter = "\n".join(exporter_lines) + "\n"
     tmpfiles = "\n".join(tmpfiles_lines) + "\n"
-    forbidden = re.compile(
-        r"(?im)^(?:EnvironmentFile|PassEnvironment|LoadCredential)="
+    forbidden = re.compile(r"(?im)^(?:EnvironmentFile|PassEnvironment)=")
+    load_credential = re.compile(r"(?m)^LoadCredential=(.+)$")
+    expected_boot_credential = SYSTEMD_BOOT_ID_CREDENTIAL_DIRECTIVE.removeprefix(
+        "LoadCredential="
     )
     if (
         forbidden.search(writer)
         or forbidden.search(phase_b_readiness)
         or forbidden.search(gateway)
         or forbidden.search(exporter)
+        or load_credential.findall(writer) != [expected_boot_credential]
+        or load_credential.findall(gateway) != [expected_boot_credential]
+        or load_credential.findall(phase_b_readiness)
+        or load_credential.findall(exporter)
     ):
         raise RuntimeError("writer-only units cannot inject environment or credentials")
     payload = {
@@ -602,6 +651,7 @@ __all__ = [
     "PHASE_B_READINESS_MODULE",
     "PHASE_B_READINESS_UNIT_NAME",
     "ReleaseManifest",
+    "render_phase_b_readiness_service",
     "SystemdUnitBundle",
     "TMPFILES_NAME",
     "TreeEntry",
