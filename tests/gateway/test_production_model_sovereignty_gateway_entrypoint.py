@@ -109,7 +109,7 @@ def test_production_owner_team_agent_projection_is_frozen_before_creation() -> N
     assert team is not None
     assert team.role == "team"
     assert set(team.enabled_toolsets) == {
-        "skills",
+        "skills_readonly",
         "session_search",
         "memory",
         "file",
@@ -233,9 +233,13 @@ def test_production_trusted_team_real_agent_has_full_session_tools(
         )
         assert "cronjob" in owner_agent.valid_tool_names
         assert "execute_code" not in owner_agent.valid_tool_names
-        assert {"memory", "session_search", "skill_manage"}.issubset(
-            team_agent.valid_tool_names
-        )
+        assert {
+            "memory",
+            "session_search",
+            "skills_list",
+            "skill_view",
+        }.issubset(team_agent.valid_tool_names)
+        assert "skill_manage" not in team_agent.valid_tool_names
         assert "cronjob" not in team_agent.valid_tool_names
         assert owner_agent._cached_system_prompt is None
         assert team_agent._cached_system_prompt is None

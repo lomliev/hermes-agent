@@ -58,7 +58,8 @@ TEAM_SLASH_COMMANDS = frozenset(
     }
 )
 
-TEAM_REMOVED_TOOLSETS: frozenset[str] = frozenset()
+TEAM_REMOVED_TOOLSETS = frozenset({"skills"})
+TEAM_ADDED_TOOLSETS = frozenset({"skills_readonly"})
 
 # Interactive owner-only management surface.  These are added solely from the
 # connector-authenticated owner identity; they are never inherited by cron
@@ -127,6 +128,7 @@ def project_production_agent_access(
         )
 
     normalized.difference_update(TEAM_REMOVED_TOOLSETS)
+    normalized.update(TEAM_ADDED_TOOLSETS)
     return ProductionAgentAccess(
         role=role,
         enabled_toolsets=tuple(sorted(normalized)),
@@ -167,6 +169,7 @@ def production_access_config() -> dict[str, Any]:
         "owner_added_toolsets": sorted(OWNER_ADDED_TOOLSETS),
         "team_agent": {
             "skip_memory": False,
+            "added_toolsets": sorted(TEAM_ADDED_TOOLSETS),
             "removed_toolsets": sorted(TEAM_REMOVED_TOOLSETS),
         },
         "team_slash_commands": sorted(TEAM_SLASH_COMMANDS),
