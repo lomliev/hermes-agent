@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -132,7 +133,7 @@ def test_database_password_never_appears_in_ssh_process_argv(
         calls.append((argv, kwargs))
         return subprocess.CompletedProcess(argv, 0, "value\n1\n", "")
 
-    monkeypatch.setattr(db.subprocess, "run", run)
+    monkeypatch.setattr(db, "_run_bounded_process", run)
     db.run_mysql_over_ssh(
         "SELECT 1 AS value",
         SimpleNamespace(db="skyvisio_fp", timeout_seconds=10),
@@ -140,4 +141,60 @@ def test_database_password_never_appears_in_ssh_process_argv(
 
     assert calls[0][0] == [str(helper), "sh -s"]
     assert "secret-value" not in " ".join(calls[0][0])
-    assert "secret-value" in calls[0][1]["input"]
+    assert "secret-value" in calls[0][1]["input_text"]
+
+
+def test_subprocess_output_is_stopped_at_the_exact_byte_bound() -> None:
+    with pytest.raises(db.ProcessOutputBoundExceeded) as captured:
+        db._run_bounded_process(
+            [
+                sys.executable,
+                "-c",
+                "import sys; sys.stdout.buffer.write(b'x' * 2048)",
+            ],
+            input_text="",
+            timeout_seconds=5,
+            stdout_limit=1024,
+        )
+
+    assert captured.value.stream == "stdout"
+    assert captured.value.maximum == 1024
+
+
+def test_mysql_failure_exposes_only_bounded_stderr_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    args = SimpleNamespace(
+        db="skyvisio_fp",
+        query="SELECT 1 AS value",
+        case_id="case:failure",
+        requester="Nassi",
+        requester_id="trusted-user",
+        purpose="Read one value",
+        expected_result_shape="scalar",
+        max_rows=1,
+        timeout_seconds=10,
+        sensitivity="normal",
+        redact_field=[],
+    )
+    secret_stderr = "mysql failed near customer-secret@example.com"
+    monkeypatch.setattr(db, "parser", lambda: SimpleNamespace(parse_args=lambda: args))
+    monkeypatch.setattr(
+        db,
+        "run_mysql_over_ssh",
+        lambda _query, _args: (
+            subprocess.CompletedProcess([], 1, "", secret_stderr),
+            1,
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        db.main()
+
+    emitted = capsys.readouterr().out
+    assert secret_stderr not in emitted
+    payload = db.json.loads(emitted)
+    assert payload["reason"] == "mysql_query_failed"
+    assert payload["stderr_bytes"] == len(secret_stderr.encode("utf-8"))
+    assert len(payload["stderr_sha256"]) == 64

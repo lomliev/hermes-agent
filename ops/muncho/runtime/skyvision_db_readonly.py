@@ -14,7 +14,9 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import re
+import selectors
 import shlex
 import subprocess
 import time
@@ -62,6 +64,9 @@ DB_CONFIGS = {
     },
 }
 ALLOWED_DBS = tuple(sorted(DB_CONFIGS))
+MAX_STDOUT_BYTES = 4 * 1024 * 1024
+MAX_STDERR_BYTES = 64 * 1024
+READ_CHUNK_BYTES = 64 * 1024
 
 # These expressions validate SQL grammar/safety only.  They do not classify
 # business intent or data sensitivity.
@@ -75,6 +80,15 @@ ALLOWED_START_RE = re.compile(
     r"^\s*(SELECT|EXPLAIN|DESCRIBE|DESC)\b",
     re.IGNORECASE,
 )
+
+
+class ProcessOutputBoundExceeded(RuntimeError):
+    """One exact child output stream exceeded its mechanical byte bound."""
+
+    def __init__(self, stream: str, maximum: int):
+        super().__init__(f"{stream}_bound_exceeded")
+        self.stream = stream
+        self.maximum = maximum
 
 
 def emit(data: dict[str, Any], code: int = 0) -> None:
@@ -162,6 +176,74 @@ def parse_tsv(
     return headers, parsed, redactions, truncated
 
 
+def _run_bounded_process(
+    argv: list[str],
+    *,
+    input_text: str,
+    timeout_seconds: int,
+    stdout_limit: int = MAX_STDOUT_BYTES,
+    stderr_limit: int = MAX_STDERR_BYTES,
+) -> subprocess.CompletedProcess[str]:
+    """Run one child while enforcing hard incremental output limits."""
+
+    process = subprocess.Popen(
+        argv,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise RuntimeError("bounded_process_pipe_unavailable")
+    streams = {
+        "stdout": (process.stdout, stdout_limit),
+        "stderr": (process.stderr, stderr_limit),
+    }
+    buffers = {"stdout": bytearray(), "stderr": bytearray()}
+    selector = selectors.DefaultSelector()
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        process.stdin.write(input_text.encode("utf-8"))
+        process.stdin.close()
+        for name, (stream, maximum) in streams.items():
+            os.set_blocking(stream.fileno(), False)
+            selector.register(stream, selectors.EVENT_READ, (name, maximum))
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout_seconds)
+            events = selector.select(min(remaining, 0.25))
+            for key, _mask in events:
+                name, maximum = key.data
+                chunk = os.read(key.fileobj.fileno(), READ_CHUNK_BYTES)
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    key.fileobj.close()
+                    continue
+                if len(buffers[name]) + len(chunk) > maximum:
+                    raise ProcessOutputBoundExceeded(name, maximum)
+                buffers[name].extend(chunk)
+        returncode = process.wait(max(0.001, deadline - time.monotonic()))
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    finally:
+        selector.close()
+        for stream, _maximum in streams.values():
+            if not stream.closed:
+                stream.close()
+        if not process.stdin.closed:
+            process.stdin.close()
+    try:
+        stdout = bytes(buffers["stdout"]).decode("utf-8", errors="strict")
+        stderr = bytes(buffers["stderr"]).decode("utf-8", errors="replace")
+    except UnicodeError as exc:
+        raise RuntimeError("mysql_output_encoding_invalid") from exc
+    return subprocess.CompletedProcess(argv, returncode, stdout, stderr)
+
+
 def run_mysql_over_ssh(
     query: str,
     args: argparse.Namespace,
@@ -193,14 +275,10 @@ def run_mysql_over_ssh(
         f"--database {shlex.quote(database)} -e {shlex.quote(query)}\n"
     )
     started = time.time()
-    proc = subprocess.run(
+    proc = _run_bounded_process(
         [ssh_helper, "sh -s"],
-        input=remote_script,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=args.timeout_seconds,
-        check=False,
+        input_text=remote_script,
+        timeout_seconds=args.timeout_seconds,
     )
     return proc, int((time.time() - started) * 1000)
 
@@ -243,12 +321,27 @@ def main() -> None:
         args.max_rows,
     )
     started = time.time()
-    proc, duration_ms = run_mysql_over_ssh(query, args)
+    try:
+        proc, duration_ms = run_mysql_over_ssh(query, args)
+    except ProcessOutputBoundExceeded as exc:
+        fail(
+            "mysql_output_bound_exceeded",
+            query_hash=query_hash(query),
+            stream=exc.stream,
+            maximum_bytes=exc.maximum,
+        )
+    except subprocess.TimeoutExpired:
+        fail(
+            "mysql_query_timeout",
+            query_hash=query_hash(query),
+            timeout_seconds=args.timeout_seconds,
+        )
     if proc.returncode != 0:
         fail(
             "mysql_query_failed",
             query_hash=query_hash(query),
-            stderr_tail=proc.stderr[-800:],
+            stderr_bytes=len(proc.stderr.encode("utf-8")),
+            stderr_sha256=hashlib.sha256(proc.stderr.encode("utf-8")).hexdigest(),
             duration_ms=int((time.time() - started) * 1000),
         )
     headers, rows, redactions, truncated = parse_tsv(
