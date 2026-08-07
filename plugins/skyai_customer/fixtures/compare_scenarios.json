@@ -244,6 +244,11 @@
     "focus": "official contacts and working hours"
   },
   {
+    "id": "widget_image_upload_unsupported",
+    "message": "Как да изпратя снимка?",
+    "focus": "current widget verified capabilities: reject attachment-icon answer; image/file upload unsupported; no attachment button and no upload endpoint/FormData; say the chat cannot upload images and offer supported alternatives like describing the visible issue/text or official support if a screenshot is necessary; do not invent another upload channel"
+  },
+  {
     "id": "off_topic_chemistry",
     "message": "Имам тест по химия, можеш ли да ми решиш задачата?",
     "focus": "stay in SkyVision scope without being rude"

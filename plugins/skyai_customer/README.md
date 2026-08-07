@@ -77,6 +77,11 @@ Current line:
   structured field has precedence over product prose; missing/fetch-failed
   detail stays unverified. No universal cancellation-hour constant, classifier,
   router, or customer-answer template is added.
+- `v2.16` - verified current-surface capability facts are visible to Hermes for
+  the widget: text, send, and voice controls are present; image/file upload,
+  attachment UI, and upload endpoint/FormData are unsupported. Hermes must not
+  invent UI controls or assert unknown-surface capabilities. No keyword router,
+  canned response template, or output post-processing is added.
 
 ## Canonical Source
 

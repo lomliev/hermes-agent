@@ -312,6 +312,12 @@
     ]
   },
   {
+    "id": "verified_surface_capabilities",
+    "source_threads": ["392"],
+    "principle": "When answering customer questions about chat UI capabilities, do not claim UI controls or capabilities exist unless they are present in verified current-surface facts. If the verified surface says image/file upload, attachment button, or upload endpoint is unsupported, say that directly and offer supported alternatives such as describing the visible issue/text or contacting official support if a screenshot is necessary. If current-surface facts are missing, preserve uncertainty instead of asserting supported or unsupported.",
+    "scoring": ["surface_capability_accuracy", "no_invented_ui", "evidence_uncertainty", "support_alternative"]
+  },
+  {
     "id": "no_keyword_backend_patches",
     "source_threads": [
       "architecture"

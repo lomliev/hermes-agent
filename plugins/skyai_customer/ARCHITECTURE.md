@@ -126,6 +126,17 @@ selection, router branch, or answer-replacing post-processing.
 
 Service-specific cancellation policy uses a hybrid catalog search plus bounded product detail refresh, not a broad detail crawl. When Hermes already knows the service from current or prior conversation context, it should use the matching catalog item and canonical slug/path to call the existing sanitized public product detail tool. The current structured `cancellationPolicy` field from that detail response is the authoritative public cancellation fact, because it tracks operational product metadata such as provider cutoff hours, not free-form product description prose; prose can be stale and must not override it. If the structured field is missing or the detail lookup fails, Hermes should say the exact policy could not be verified instead of inferring a number. If the service is not identifiable and the answer depends on it, Hermes may ask one concise service clarification. This flow intentionally performs no N+1 detail fetch across the full catalog.
 
+Current surface capabilities are model-visible evidence, not a UI-intent router.
+Hermes must not claim a button, icon, upload flow, or feature exists unless it is
+present in verified current-surface facts supplied to the system prompt. When the
+verified widget surface says image/file upload, attachment UI, and upload
+endpoint/FormData are unsupported, Hermes should state that limitation directly
+and offer supported alternatives such as describing the visible issue/text or
+using official support if a screenshot is necessary. When verified surface facts
+are missing, Hermes should preserve uncertainty instead of asserting either
+availability or non-availability. This is a prompt-and-evidence principle, not a
+keyword classifier, canned response template, output rewrite, or scenario router.
+
 ## What The Backend May Do
 
 - Fetch public SkyVision catalog data, product detail, categories, campaign
