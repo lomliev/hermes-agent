@@ -698,6 +698,12 @@ def test_campaign_knowledge_returns_public_sales_and_terms_facts() -> None:
     assert campaign["campaign_2026_facts"]["archive_2025_url"] == (
         "https://skyvision.bg/campaign/free-panoramic-flight-2025/"
     )
+    campaign_2026_facts_evidence = json.dumps(campaign["campaign_2026_facts"], ensure_ascii=False)
+    active_campaign_evidence = json.dumps(campaign, ensure_ascii=False)
+    assert "31.08.2026" in campaign["campaign_2026_facts"]["period"]
+    for evidence in (campaign_2026_facts_evidence, active_campaign_evidence):
+        assert "до изчерпване на капацитета" not in evidence
+        assert "500 полета" not in evidence
     assert campaign["campaign_2026_facts"]["validity"] == "12 месеца от датата на покупката"
     assert "независимо къде се изпълнява основната" in (
         campaign["campaign_2026_facts"]["main_service_location_independent"]
