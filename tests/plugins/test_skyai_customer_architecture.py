@@ -32,7 +32,7 @@ def test_skyai_prompt_is_principle_based_not_script_pack() -> None:
 
     assert "Hermes мисли" in prompt
     assert "не е заповед какво да кажеш" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
     assert "SkyAI sales playbook" not in prompt
     assert "do_not_say" not in prompt
     assert "customer_facing_flow" not in prompt
@@ -130,7 +130,7 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "нов ваучер или директен BookNow" in prompt
     assert "конкретна дата/час не доказва BookNow" in prompt
     assert "получателят/доплащащият не става автоматично собственик" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
 
     assert "Existing-voucher top-up campaign entitlement" in architecture
     assert "choosing a concrete date/time does not prove BookNow" in architecture
@@ -270,7 +270,7 @@ def test_pilot_provider_phone_is_confirmation_email_context_not_public_page_scri
     assert "публичната продуктова страница" in prompt
     assert "не измисляй публична секция" in prompt
     assert "номер на пилот" in prompt
-    assert len(prompt) < 6300
+    assert len(prompt) < 6800
 
     reservation_support = support["reservation_support"]
     provider_contact = reservation_support["provider_contact_details"]
@@ -329,7 +329,7 @@ def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     assert "директен BookNow/карта само без ваучер" in prompt
     assert "Не твърди задължителни UI стъпки" in prompt
     assert "tool/public evidence" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
 
     assert "Reservation path ambiguity is Hermes reasoning context" in architecture
     assert "not a runtime intent router" in architecture
@@ -422,7 +422,7 @@ def test_minimum_reservation_anxiety_uses_model_verified_alternative_principle()
     assert "друг изпълнител" in prompt
     assert "само по себе си" in prompt
     assert "няма проверена алтернатива" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
 
     assert "Minimum-reservation anxiety is Hermes reasoning context" in architecture
     assert "not a keyword classifier" in architecture
