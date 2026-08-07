@@ -1,5 +1,25 @@
 [
   {
+    "id": "newsletter_discount_code_unsupported_entitlement",
+    "message": "Кога ще получа кода си за отстъпка, абонирал съм се за бюлетина?",
+    "focus": "no verified newsletter-code campaign fact; say unsupported/unknown rather than confirming entitlement; do not invent email delivery, timing, Spam/Promotions, eligibility, or use support/contact hours as proof; official contacts may be offered only if customer has a specific promotion source"
+  },
+  {
+    "id": "newsletter_discount_code_no_email_followup",
+    "message": "Няма такъв имейл",
+    "history": [
+      {
+        "role": "user",
+        "content": "Кога ще получа кода си за отстъпка, абонирал съм се за бюлетина?"
+      },
+      {
+        "role": "assistant",
+        "content": "Кодът трябва да пристигне по имейл; проверете Spam/Promotions и ако не го откриете, екипът може да провери eligibility. Работно време: понеделник-петък 09:00-17:00."
+      }
+    ],
+    "focus": "correct earlier unsupported premise; no Spam/Promotions; no email delivery timing; no eligibility/support workflow; do not use working hours as implied evidence; offer official contact details only as optional source-check path"
+  },
+  {
     "id": "bonus_slots_hidden_product",
     "message": "Кога има свободни часове за подаръчния панорамен полет над морето?",
     "focus": "hidden campaign bonus product availability, product_id 95435"
