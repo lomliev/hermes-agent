@@ -498,6 +498,14 @@ def _fixture(tmp_path: Path) -> Fixture:
         predecessor_revision=PREDECESSOR,
         release_revision=TARGET,
     )
+    safety_plan = update_inputs.runtime_safety.build_runtime_safety_plan(
+        predecessor_revision=PREDECESSOR,
+        release_revision=TARGET,
+        release_consumer_set_sha256=consumer_set[
+            "consumer_set_sha256"
+        ],
+        consumer_catalog_sha256=consumer_set["catalog_sha256"],
+    )
     full_collector = input_test.owner_test._collector_receipt(  # noqa: SLF001
         NOW,
         input_test.owner_test.Services(),
@@ -521,6 +529,9 @@ def _fixture(tmp_path: Path) -> Fixture:
         "host_inventory_sha256": host_receipt["receipt_sha256"],
         "release_consumer_set_sha256": consumer_set[
             "consumer_set_sha256"
+        ],
+        "runtime_safety_plan_sha256": safety_plan[
+            "runtime_safety_plan_sha256"
         ],
         "host_artifact_manifest_sha256": host_manifest[
             "manifest_sha256"
@@ -552,6 +563,7 @@ def _fixture(tmp_path: Path) -> Fixture:
     semantic_documents = {
         "host_inventory_sha256": host_receipt,
         "release_consumer_set_sha256": consumer_set,
+        "runtime_safety_plan_sha256": safety_plan,
         "host_artifact_manifest_sha256": host_manifest,
         "host_mutation_authority_sha256": host_mutation_authority,
         "host_mutation_initial_collector_receipt_sha256": initial_collector,

@@ -30,6 +30,7 @@ from scripts.canary import production_cutover_host_authority as host_authority
 from scripts.canary import production_cutover_owner_launcher as cutover_owner
 from scripts.canary import production_release_consumer_inventory as inventory
 from scripts.canary import production_release_host_observer as host_observer
+from scripts.canary import production_release_runtime_safety as runtime_safety
 from scripts.canary import production_release_unit_inputs_v4 as unit_inputs_v4
 from scripts.canary import production_release_update_contract as update_contract
 from scripts.canary import production_release_update_runtime as update_runtime
@@ -38,8 +39,8 @@ from scripts.canary import production_release_update_runtime as update_runtime
 RELEASE_CONSUMER_SET_SCHEMA = (
     "muncho-production-release-consumer-set.v1"
 )
-ACTIVATION_PLAN_SCHEMA = "muncho-production-release-activation-plan.v4"
-ROLLBACK_PLAN_SCHEMA = "muncho-production-release-rollback-plan.v4"
+ACTIVATION_PLAN_SCHEMA = "muncho-production-release-activation-plan.v5"
+ROLLBACK_PLAN_SCHEMA = "muncho-production-release-rollback-plan.v5"
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
@@ -47,6 +48,7 @@ _DOCUMENT_FIELDS = frozenset(
     {
         "host_inventory_sha256",
         "release_consumer_set_sha256",
+        "runtime_safety_plan_sha256",
         "host_artifact_manifest_sha256",
         "host_mutation_authority_sha256",
         "host_mutation_initial_collector_receipt_sha256",
@@ -61,6 +63,7 @@ _ARTIFACT_IDENTITY_FIELDS = frozenset(
     {
         "host_inventory_sha256",
         "release_consumer_set_sha256",
+        "runtime_safety_plan_sha256",
         "host_artifact_manifest_sha256",
         "host_mutation_authority_sha256",
         "host_mutation_initial_collector_receipt_sha256",
@@ -1408,6 +1411,15 @@ def validate_stage0_inputs(
         release_revision=release,
     )
     try:
+        safety_plan = runtime_safety.validate_runtime_safety_plan(
+            documents["runtime_safety_plan_sha256"],
+            predecessor_revision=predecessor,
+            release_revision=release,
+            release_consumer_set=consumer_set,
+        )
+    except runtime_safety.ProductionReleaseRuntimeSafetyError as exc:
+        _fail("release_update_inputs_runtime_safety_invalid", exc)
+    try:
         successor = unit_inputs_v4.validate_publication(
             documents["successor_unit_input_publication_sha256"],
             trusted_predecessor=trusted_predecessor,
@@ -1446,6 +1458,9 @@ def validate_stage0_inputs(
         "host_inventory_sha256": host_receipt["receipt_sha256"],
         "release_consumer_set_sha256": consumer_set[
             "consumer_set_sha256"
+        ],
+        "runtime_safety_plan_sha256": safety_plan[
+            "runtime_safety_plan_sha256"
         ],
         "host_artifact_manifest_sha256": host_manifest[
             "manifest_sha256"
@@ -1498,6 +1513,7 @@ def validate_stage0_inputs(
     normalized_documents = {
         "host_inventory_sha256": host_receipt,
         "release_consumer_set_sha256": consumer_set,
+        "runtime_safety_plan_sha256": safety_plan,
         "host_artifact_manifest_sha256": host_manifest,
         "host_mutation_authority_sha256": host_mutation_authority,
         "host_mutation_initial_collector_receipt_sha256": _plain(

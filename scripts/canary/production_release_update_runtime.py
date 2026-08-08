@@ -18,9 +18,10 @@ from typing import Any, Mapping, NoReturn, Protocol, Sequence
 
 from scripts.canary import production_cutover_activation_lock as authority_lock
 from scripts.canary import production_release_update_contract as authority
+from scripts.canary import production_release_runtime_safety as runtime_safety
 
 
-INTENT_SCHEMA = "muncho-production-release-update-intent.v6"
+INTENT_SCHEMA = "muncho-production-release-update-intent.v7"
 AUTHORITY_RECORD_SCHEMA = "muncho-production-release-update-authority-record.v4"
 EVENT_SCHEMA = "muncho-production-release-update-event.v2"
 ZERO_SHA256 = "0" * 64
@@ -95,6 +96,13 @@ _ACTION_RECEIPT_SCHEMA_VERSIONS: Mapping[str, int] = {
     "prestate_archived": 2,
     "unit_inputs_prepared": 2,
     "unit_inputs_finalized": 2,
+    "voice_guard_initial": 2,
+    "voice_guard_final": 2,
+    "target_started_disabled": 2,
+    "target_health_validated": 2,
+    "target_consumers_enabled": 2,
+    "terminal_validated": 2,
+    "completed_revalidated": 2,
 }
 COMMIT_PHASE = "activation_commit_intent"
 UNIT_INPUT_PREAUTHORIZATION_PHASE = "unit_inputs_finalize_preauthorized"
@@ -157,6 +165,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
     "voice_guard_initial": frozenset({
         "voice_guard_observation_sha256",
         "protected_service_set_sha256",
+        "runtime_safety_plan_sha256",
         "observed_active_revision",
         "healthy_voice_target_count",
         "all_required_voice_targets_healthy",
@@ -194,6 +203,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
     "voice_guard_final": frozenset({
         "voice_guard_observation_sha256",
         "protected_service_set_sha256",
+        "runtime_safety_plan_sha256",
         "observed_active_revision",
         "healthy_voice_target_count",
         "all_required_voice_targets_healthy",
@@ -232,9 +242,13 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "enabled_trigger_unit_count",
         "observed_target_revision",
         "target_process_set_sha256",
+        "runtime_safety_plan_sha256",
+        "precommit_service_set_sha256",
+        "disabled_trigger_set_sha256",
+        "session_drain_receipt_sha256",
+        "ingress_gate_receipt_sha256",
         "target_runtime_classes_ready",
         "only_declared_cutover_service_classes_started",
-        "external_ingress_disabled",
     }),
     "target_health_validated": frozenset({
         "health_observation_sha256",
@@ -242,7 +256,10 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "observed_target_revision",
         "validated_endpoint_count",
         "validated_connector_count",
-        "external_ingress_disabled",
+        "runtime_safety_plan_sha256",
+        "precommit_probe_catalog_sha256",
+        "session_drain_receipt_sha256",
+        "ingress_gate_receipt_sha256",
         "all_required_health_checks_passed",
     }),
     "unit_inputs_finalize_preauthorized": frozenset({
@@ -291,6 +308,12 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "enabled_trigger_unit_count",
         "observed_target_revision",
         "unknown_consumer_process_count",
+        "runtime_safety_plan_sha256",
+        "postcommit_probe_catalog_sha256",
+        "public_start_order_sha256",
+        "enabled_trigger_set_sha256",
+        "ingress_gate_receipt_sha256",
+        "validated_postcommit_probe_count",
         "all_expected_consumers_enabled",
     }),
     "terminal_validated": frozenset({
@@ -305,6 +328,11 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "unknown_consumer_process_count",
         "need_daemon_reload_unit_count",
         "terminal_health_observation_sha256",
+        "runtime_safety_plan_sha256",
+        "postcommit_probe_catalog_sha256",
+        "enabled_trigger_set_sha256",
+        "ingress_gate_receipt_sha256",
+        "validated_postcommit_probe_count",
         "all_required_health_checks_passed",
     }),
     "target_stopped": frozenset({
@@ -379,6 +407,11 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "unknown_consumer_process_count",
         "need_daemon_reload_unit_count",
         "terminal_health_observation_sha256",
+        "runtime_safety_plan_sha256",
+        "postcommit_probe_catalog_sha256",
+        "enabled_trigger_set_sha256",
+        "ingress_gate_receipt_sha256",
+        "validated_postcommit_probe_count",
         "all_required_health_checks_passed",
     }),
     "rolled_back_revalidated": frozenset({
@@ -429,6 +462,7 @@ _PLAN_PROJECTION_FIELDS = (
     "entrypoint_sha256",
     "host_inventory_sha256",
     "release_consumer_set_sha256",
+    "runtime_safety_plan_sha256",
     "host_artifact_manifest_sha256",
     "host_mutation_authority_sha256",
     "host_mutation_initial_collector_receipt_sha256",
@@ -882,6 +916,8 @@ def _validate_action_evidence(
 ) -> None:
     predecessor = str(intent["predecessor_revision"])
     release = str(intent["release_revision"])
+    safety_identities = runtime_safety.structural_receipt_identities()
+    safety_counts = runtime_safety.structural_receipt_counts()
 
     if phase == "candidate_validated":
         _require_action(
@@ -902,7 +938,12 @@ def _validate_action_evidence(
         _sha_field(receipt, "voice_guard_observation_sha256")
         protected_set = _sha_field(receipt, "protected_service_set_sha256")
         _require_action(
-            _revision_field(receipt, "observed_active_revision") == predecessor
+            _sha_field(receipt, "runtime_safety_plan_sha256")
+            == intent["runtime_safety_plan_sha256"]
+            and protected_set
+            == safety_identities["protected_service_set_sha256"]
+            and _revision_field(receipt, "observed_active_revision")
+            == predecessor
         )
         healthy_count = _count_field(
             receipt,
@@ -910,6 +951,9 @@ def _validate_action_evidence(
             positive=True,
         )
         _true_field(receipt, "all_required_voice_targets_healthy")
+        _require_action(
+            healthy_count == safety_counts["protected_voice_service_count"]
+        )
         if phase == "voice_guard_final":
             initial = _receipt_for_evidence(
                 receipts,
@@ -1152,7 +1196,10 @@ def _validate_action_evidence(
                 receipt,
                 "started_long_running_service_unit_count",
             )
-            == expected_long_running
+            == (
+                expected_long_running
+                - len(runtime_safety.PUBLIC_INGRESS_SERVICE_UNITS)
+            )
             and _count_field(
                 receipt,
                 "started_startup_oneshot_service_unit_count",
@@ -1165,14 +1212,23 @@ def _validate_action_evidence(
             == 0
             and _count_field(receipt, "enabled_trigger_unit_count") == 0
             and _revision_field(receipt, "observed_target_revision") == release
+            and _sha_field(receipt, "runtime_safety_plan_sha256")
+            == intent["runtime_safety_plan_sha256"]
         )
         _sha_field(receipt, "target_process_set_sha256")
+        _require_action(
+            _sha_field(receipt, "precommit_service_set_sha256")
+            == safety_identities["precommit_service_set_sha256"]
+            and _sha_field(receipt, "disabled_trigger_set_sha256")
+            == safety_identities["disabled_trigger_set_sha256"]
+        )
+        _sha_field(receipt, "session_drain_receipt_sha256")
+        _sha_field(receipt, "ingress_gate_receipt_sha256")
         _true_field(receipt, "target_runtime_classes_ready")
         _true_field(
             receipt,
             "only_declared_cutover_service_classes_started",
         )
-        _true_field(receipt, "external_ingress_disabled")
         return
 
     if phase == "target_health_validated":
@@ -1185,10 +1241,22 @@ def _validate_action_evidence(
             _sha_field(receipt, "target_process_set_sha256")
             == started.get("target_process_set_sha256")
             and _revision_field(receipt, "observed_target_revision") == release
+            and _sha_field(receipt, "runtime_safety_plan_sha256")
+            == intent["runtime_safety_plan_sha256"]
+            and _sha_field(receipt, "ingress_gate_receipt_sha256")
+            == started.get("ingress_gate_receipt_sha256")
+            and _sha_field(receipt, "session_drain_receipt_sha256")
+            == started.get("session_drain_receipt_sha256")
         )
-        _count_field(receipt, "validated_endpoint_count", positive=True)
-        _count_field(receipt, "validated_connector_count")
-        _true_field(receipt, "external_ingress_disabled")
+        _require_action(
+            _count_field(receipt, "validated_endpoint_count", positive=True)
+            == safety_counts["precommit_probe_count"]
+        )
+        _require_action(_count_field(receipt, "validated_connector_count") == 0)
+        _require_action(
+            _sha_field(receipt, "precommit_probe_catalog_sha256")
+            == safety_identities["precommit_probe_catalog_sha256"]
+        )
         _true_field(receipt, "all_required_health_checks_passed")
         return
 
@@ -1408,6 +1476,10 @@ def _validate_action_evidence(
         return
 
     if phase == "target_consumers_enabled":
+        precommit_health = _receipt_for_evidence(
+            receipts,
+            "target_health_validated",
+        )
         _sha_field(receipt, "host_observation_receipt_sha256")
         _require_action(
             _sha_field(receipt, "consumer_inventory_sha256") == inventory_sha256
@@ -1429,6 +1501,28 @@ def _validate_action_evidence(
             and _count_field(receipt, "enabled_trigger_unit_count") == expected_triggers
             and _revision_field(receipt, "observed_target_revision") == release
             and _count_field(receipt, "unknown_consumer_process_count") == 0
+            and _sha_field(receipt, "runtime_safety_plan_sha256")
+            == intent["runtime_safety_plan_sha256"]
+        )
+        _require_action(
+            _sha_field(receipt, "postcommit_probe_catalog_sha256")
+            == safety_identities["postcommit_probe_catalog_sha256"]
+            and _sha_field(receipt, "public_start_order_sha256")
+            == safety_identities["public_start_order_sha256"]
+            and _sha_field(receipt, "enabled_trigger_set_sha256")
+            == safety_identities["enabled_trigger_set_sha256"]
+        )
+        _require_action(
+            _sha_field(receipt, "ingress_gate_receipt_sha256")
+            != precommit_health.get("ingress_gate_receipt_sha256")
+        )
+        _require_action(
+            _count_field(
+                receipt,
+                "validated_postcommit_probe_count",
+                positive=True,
+            )
+            == safety_counts["postcommit_probe_count"]
         )
         _true_field(receipt, "all_expected_consumers_enabled")
         return
@@ -1468,6 +1562,28 @@ def _validate_action_evidence(
             and _count_field(receipt, "need_daemon_reload_unit_count") == 0
         )
         _sha_field(receipt, "terminal_health_observation_sha256")
+        enabled = _receipt_for_evidence(
+            receipts,
+            "target_consumers_enabled",
+        )
+        _require_action(
+            _sha_field(receipt, "runtime_safety_plan_sha256")
+            == intent["runtime_safety_plan_sha256"]
+        )
+        _require_action(
+            _sha_field(receipt, "postcommit_probe_catalog_sha256")
+            == enabled.get("postcommit_probe_catalog_sha256")
+            and _sha_field(receipt, "enabled_trigger_set_sha256")
+            == enabled.get("enabled_trigger_set_sha256")
+            and _sha_field(receipt, "ingress_gate_receipt_sha256")
+            == enabled.get("ingress_gate_receipt_sha256")
+            and _count_field(
+                receipt,
+                "validated_postcommit_probe_count",
+                positive=True,
+            )
+            == enabled.get("validated_postcommit_probe_count")
+        )
         _true_field(receipt, "all_required_health_checks_passed")
         return
 

@@ -69,7 +69,7 @@ host mutation set, fixed production entrypoint, recovery gate, and disposable
 Linux power-loss/restart E2E suite land together.  The missing entrypoint is an
 intentional deployment interlock, not a packaging omission.
 
-Plan v7 now binds the exact read-only host-mutation authority receipt and its
+Plan v8 now binds the exact read-only host-mutation authority receipt and its
 exact initial collector receipt.  The canonical host-authority validator
 reconstructs and validates the complete target identities, transition,
 capability topology, cron-continuity plan, request, staged SHA-256 values, and
@@ -79,6 +79,20 @@ receipts must also satisfy the canonical 900-second freshness window and
 activation/rollback plans and durable transaction intent.  This closes the
 data-authority and stale-replay gaps only; it does not authorize a host
 mutation caller and does not relax the initial Canonical cutover requirement.
+
+Plan v8 additionally binds one exact self-hashed runtime-safety plan through
+Stage 0, both activation directions, and the durable transaction intent.  The
+plan derives the complete 18-service long-running catalog into separate
+structural cohorts: 16 local precommit services, then the Discord public
+connector and gateway in that exact postcommit order.  Public ingress is the
+connector plus gateway; the protected voice restart set is the gateway only,
+derived from the gateway voice receiver/call-lease rail rather than inferred
+from public-ingress membership.  All 30 triggers remain disabled until after
+commit.  The contract binds exact local and public probe catalogs and a
+write-ahead ingress gate intent/apply/readback sequence; a caller boolean is
+never ingress evidence.  This is still contract readiness only.  The fixed
+root host backend that produces those observations remains a later isolated
+package and must not synthesize success.
 
 A legacy release already present at the deterministic candidate path is never
 upgraded in place.  Stage 0 accepts only a distinct successor revision in a
@@ -98,8 +112,8 @@ The recurrent updater must never bootstrap missing Canonical units, accept a
 compatibility-symlink runtime as its predecessor, or infer the initial truth
 mode.
 
-The dormant runtime currently uses transaction intent v6, authority-record v4,
-and event v2 (`muncho-production-release-update-intent.v6`,
+The dormant runtime currently uses transaction intent v7, authority-record v4,
+and event v2 (`muncho-production-release-update-intent.v7`,
 `muncho-production-release-update-authority-record.v4`, and
 `muncho-production-release-update-event.v2`).  An activation installer must
 prove that no legacy v3/v1/v1 authority or journal evidence, or any earlier

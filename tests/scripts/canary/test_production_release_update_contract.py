@@ -59,6 +59,7 @@ def _plan_values() -> dict[str, object]:
         "entrypoint_sha256": "0d" * 32,
         "host_inventory_sha256": "0e" * 32,
         "release_consumer_set_sha256": "0f" * 32,
+        "runtime_safety_plan_sha256": "18" * 32,
         "host_artifact_manifest_sha256": "10" * 32,
         "host_mutation_authority_sha256": "16" * 32,
         "host_mutation_initial_collector_receipt_sha256": "17" * 32,
@@ -179,7 +180,7 @@ def test_owner_signed_publication_binds_exact_pinned_release() -> None:
     assert validated["plan"]["builder_identity"]["uid"] == 29104
     assert validated["plan"]["plan_sha256"] == plan["plan_sha256"]
     assert validated["plan"]["schema"] == (
-            "muncho-production-release-update-plan.v7"
+            "muncho-production-release-update-plan.v8"
     )
 
 
