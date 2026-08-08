@@ -518,6 +518,14 @@ def _fixture() -> Fixture:
         predecessor_revision=PREDECESSOR,
         release_revision=TARGET,
     )
+    safety_plan = inputs.runtime_safety.build_runtime_safety_plan(
+        predecessor_revision=PREDECESSOR,
+        release_revision=TARGET,
+        release_consumer_set_sha256=consumer_set[
+            "consumer_set_sha256"
+        ],
+        consumer_catalog_sha256=consumer_set["catalog_sha256"],
+    )
     full_collector = owner_test._collector_receipt(  # noqa: SLF001
         NOW,
         owner_test.Services(),
@@ -539,6 +547,9 @@ def _fixture() -> Fixture:
         "host_inventory_sha256": host_receipt["receipt_sha256"],
         "release_consumer_set_sha256": consumer_set[
             "consumer_set_sha256"
+        ],
+        "runtime_safety_plan_sha256": safety_plan[
+            "runtime_safety_plan_sha256"
         ],
         "host_artifact_manifest_sha256": host_manifest[
             "manifest_sha256"
@@ -586,6 +597,7 @@ def _fixture() -> Fixture:
     placeholder.documents = {
         "host_inventory_sha256": host_receipt,
         "release_consumer_set_sha256": consumer_set,
+        "runtime_safety_plan_sha256": safety_plan,
         "host_artifact_manifest_sha256": host_manifest,
         "host_mutation_authority_sha256": host_mutation_authority,
         "host_mutation_initial_collector_receipt_sha256": initial_collector,
@@ -631,6 +643,74 @@ def test_all_remaining_inputs_bind_internal_identities_and_v4_fixed_inputs() -> 
     assert authority["release_manifest_sha256"] == validated.documents[
         "host_artifact_manifest_sha256"
     ]["manifest_sha256"]
+
+
+def test_runtime_safety_plan_is_bound_by_update_activation_and_rollback() -> None:
+    fixture = _fixture()
+    validated = _validate(fixture)
+    identity = fixture.documents["runtime_safety_plan_sha256"][
+        "runtime_safety_plan_sha256"
+    ]
+
+    assert validated.identities["runtime_safety_plan_sha256"] == identity
+    assert fixture.update_publication["plan"][
+        "runtime_safety_plan_sha256"
+    ] == identity
+    assert fixture.documents["activation_plan_sha256"][
+        "artifact_identities"
+    ]["runtime_safety_plan_sha256"] == identity
+    assert fixture.documents["rollback_plan_sha256"][
+        "artifact_identities"
+    ]["runtime_safety_plan_sha256"] == identity
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("protected_voice_service_units", []),
+        ("public_ingress_service_units", ["hermes-cloud-gateway.service"]),
+        ("precommit_health_probes", []),
+        ("postcommit_health_probes", []),
+        ("external_ingress_gate", {}),
+    ],
+)
+def test_stage0_rejects_rehashed_runtime_safety_downgrade(
+    field: str,
+    replacement: object,
+) -> None:
+    fixture = _fixture()
+    safety_plan = deepcopy(
+        fixture.documents["runtime_safety_plan_sha256"]
+    )
+    safety_plan[field] = replacement
+    _rehash(safety_plan, "runtime_safety_plan_sha256")
+    fixture.documents["runtime_safety_plan_sha256"] = safety_plan
+
+    with pytest.raises(
+        inputs.ProductionReleaseUpdateInputsError,
+        match="release_update_inputs_runtime_safety_invalid",
+    ):
+        _validate(fixture)
+
+
+def test_signed_plan_rejects_substituted_valid_runtime_safety_plan() -> None:
+    fixture = _fixture()
+    consumer_set = fixture.documents["release_consumer_set_sha256"]
+    replay = inputs.runtime_safety.build_runtime_safety_plan(
+        predecessor_revision=PREDECESSOR,
+        release_revision="9" * 40,
+        release_consumer_set_sha256=consumer_set[
+            "consumer_set_sha256"
+        ],
+        consumer_catalog_sha256=consumer_set["catalog_sha256"],
+    )
+    fixture.documents["runtime_safety_plan_sha256"] = replay
+
+    with pytest.raises(
+        inputs.ProductionReleaseUpdateInputsError,
+        match="release_update_inputs_runtime_safety_invalid",
+    ):
+        _validate(fixture)
 
 
 @pytest.mark.parametrize(
@@ -1167,7 +1247,7 @@ def test_plans_partition_every_allowed_mutation_path_without_active_claim() -> N
         assert "service_unit_count" not in plan
 
     assert activation["schema"] == (
-        "muncho-production-release-activation-plan.v4"
+        "muncho-production-release-activation-plan.v5"
     )
     assert activation["forward_phase_order"] == list(
         inputs.update_runtime.FORWARD_PHASES
@@ -1189,7 +1269,7 @@ def test_plans_partition_every_allowed_mutation_path_without_active_claim() -> N
     )
 
     assert rollback["schema"] == (
-        "muncho-production-release-rollback-plan.v4"
+        "muncho-production-release-rollback-plan.v5"
     )
     assert rollback["rollback_phase_order"] == list(
         inputs.update_runtime.ROLLBACK_PHASES

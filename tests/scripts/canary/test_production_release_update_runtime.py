@@ -53,7 +53,7 @@ def test_signed_publication_deterministically_defines_transaction_identity() -> 
     assert first_intent == replayed_intent
     assert first_record == replayed_record
     assert first_record["intent"] == first_intent
-    assert first_intent["schema"] == "muncho-production-release-update-intent.v6"
+    assert first_intent["schema"] == "muncho-production-release-update-intent.v7"
     assert first_intent["transaction_nonce_sha256"] == approval["nonce_sha256"]
     assert first_intent["created_at_unix"] == approval["issued_at_unix"]
     assert first_intent["created_at_unix"] == first_intent["approval_issued_at_unix"]
@@ -148,6 +148,9 @@ def _phase_evidence(
                 "protected_service_set_sha256",
                 _digest("protected-voice-services"),
             ),
+            "runtime_safety_plan_sha256": intent[
+                "runtime_safety_plan_sha256"
+            ],
             "observed_active_revision": predecessor,
             "healthy_voice_target_count": initial.get(
                 "healthy_voice_target_count",
@@ -264,15 +267,32 @@ def _phase_evidence(
                 "target-started-disabled-host-observation"
             ),
             "consumer_inventory_sha256": inventory_sha256,
-            "started_long_running_service_unit_count": long_running_count,
+            "started_long_running_service_unit_count": (
+                long_running_count
+                - len(runtime.runtime_safety.PUBLIC_INGRESS_SERVICE_UNITS)
+            ),
             "started_startup_oneshot_service_unit_count": (startup_oneshot_count),
             "started_triggered_oneshot_service_unit_count": 0,
             "enabled_trigger_unit_count": 0,
             "observed_target_revision": release,
             "target_process_set_sha256": _digest("target-process-set"),
+            "runtime_safety_plan_sha256": intent[
+                "runtime_safety_plan_sha256"
+            ],
+            "precommit_service_set_sha256": _digest(
+                "precommit-service-set"
+            ),
+            "disabled_trigger_set_sha256": _digest(
+                "disabled-trigger-set"
+            ),
+            "session_drain_receipt_sha256": _digest(
+                "session-drain-receipt"
+            ),
+            "ingress_gate_receipt_sha256": _digest(
+                "precommit-ingress-gate"
+            ),
             "target_runtime_classes_ready": True,
             "only_declared_cutover_service_classes_started": True,
-            "external_ingress_disabled": True,
         }
     if phase == "target_health_validated":
         return {
@@ -282,8 +302,19 @@ def _phase_evidence(
             ],
             "observed_target_revision": release,
             "validated_endpoint_count": 4,
-            "validated_connector_count": 2,
-            "external_ingress_disabled": True,
+            "validated_connector_count": 0,
+            "runtime_safety_plan_sha256": intent[
+                "runtime_safety_plan_sha256"
+            ],
+            "precommit_probe_catalog_sha256": _digest(
+                "precommit-probe-catalog"
+            ),
+            "session_drain_receipt_sha256": receipts[
+                "target_started_disabled"
+            ]["session_drain_receipt_sha256"],
+            "ingress_gate_receipt_sha256": receipts[
+                "target_started_disabled"
+            ]["ingress_gate_receipt_sha256"],
             "all_required_health_checks_passed": True,
         }
     if phase == runtime.UNIT_INPUT_PREAUTHORIZATION_PHASE:
@@ -404,6 +435,16 @@ def _phase_evidence(
             "enabled_trigger_unit_count": trigger_count,
             "observed_target_revision": release,
             "unknown_consumer_process_count": 0,
+            "runtime_safety_plan_sha256": intent[
+                "runtime_safety_plan_sha256"
+            ],
+            "postcommit_probe_catalog_sha256": _digest(
+                "postcommit-probe-catalog"
+            ),
+            "public_start_order_sha256": _digest("public-start-order"),
+            "ingress_gate_receipt_sha256": _digest(
+                "postcommit-ingress-gate"
+            ),
             "all_expected_consumers_enabled": True,
         }
     if phase in {"terminal_validated", "completed_revalidated"}:
@@ -419,6 +460,15 @@ def _phase_evidence(
             "unknown_consumer_process_count": 0,
             "need_daemon_reload_unit_count": 0,
             "terminal_health_observation_sha256": _digest(f"{phase}-health"),
+            "runtime_safety_plan_sha256": intent[
+                "runtime_safety_plan_sha256"
+            ],
+            "postcommit_probe_catalog_sha256": _digest(
+                "postcommit-probe-catalog"
+            ),
+            "ingress_gate_receipt_sha256": _digest(
+                "postcommit-ingress-gate"
+            ),
             "all_required_health_checks_passed": True,
         }
         if phase == "completed_revalidated":
@@ -957,7 +1007,17 @@ def test_generic_ok_receipt_is_rejected_for_every_action_phase() -> None:
 
 @pytest.mark.parametrize(
     "phase",
-    ("unit_inputs_prepared", "unit_inputs_finalized"),
+    (
+        "voice_guard_initial",
+        "voice_guard_final",
+        "unit_inputs_prepared",
+        "target_started_disabled",
+        "target_health_validated",
+        "unit_inputs_finalized",
+        "target_consumers_enabled",
+        "terminal_validated",
+        "completed_revalidated",
+    ),
 )
 def test_changed_action_receipt_contracts_reject_legacy_v1_schema(
     phase: str,
@@ -1038,6 +1098,36 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "f" * 64,
         ),
         (
+            "voice_guard_initial",
+            "runtime_safety_plan_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_started_disabled",
+            "started_long_running_service_unit_count",
+            runtime.EXPECTED_LONG_RUNNING_SERVICE_UNIT_COUNT,
+        ),
+        (
+            "target_started_disabled",
+            "runtime_safety_plan_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_health_validated",
+            "validated_connector_count",
+            1,
+        ),
+        (
+            "target_health_validated",
+            "ingress_gate_receipt_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_health_validated",
+            "session_drain_receipt_sha256",
+            "f" * 64,
+        ),
+        (
             "unit_inputs_prepared",
             "unit_input_rotation_transaction_sha256",
             runtime.ZERO_SHA256,
@@ -1088,6 +1178,11 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             runtime.EXPECTED_LONG_RUNNING_SERVICE_UNIT_COUNT - 1,
         ),
         (
+            "target_consumers_enabled",
+            "ingress_gate_receipt_sha256",
+            _digest("precommit-ingress-gate"),
+        ),
+        (
             "target_started_disabled",
             "started_triggered_oneshot_service_unit_count",
             1,
@@ -1098,6 +1193,11 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "not-a-digest",
         ),
         ("terminal_validated", "observed_pointer_revision", "f" * 40),
+        (
+            "terminal_validated",
+            "postcommit_probe_catalog_sha256",
+            "f" * 64,
+        ),
         (
             "host_prestate_restored",
             "prestate_archive_sha256",

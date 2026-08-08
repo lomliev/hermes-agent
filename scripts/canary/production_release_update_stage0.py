@@ -65,6 +65,7 @@ _JSON_INPUTS = {
     ),
     "host_inventory_sha256": "host-inventory.json",
     "release_consumer_set_sha256": "release-consumer-set.json",
+    "runtime_safety_plan_sha256": "runtime-safety-plan.json",
     "host_artifact_manifest_sha256": "host-artifact-manifest.json",
     "host_mutation_authority_sha256": (
         "host-mutation-authority-receipt.json"
@@ -91,6 +92,7 @@ _SEMANTIC_JSON_INPUTS = frozenset(
     {
         "host_inventory_sha256",
         "release_consumer_set_sha256",
+        "runtime_safety_plan_sha256",
         "host_artifact_manifest_sha256",
         "host_mutation_authority_sha256",
         "host_mutation_initial_collector_receipt_sha256",
@@ -106,6 +108,7 @@ _INTERNAL_IDENTITY_FIELDS = {
     "candidate_seal_receipt_sha256": "receipt_sha256",
     "host_inventory_sha256": "receipt_sha256",
     "release_consumer_set_sha256": "consumer_set_sha256",
+    "runtime_safety_plan_sha256": "runtime_safety_plan_sha256",
     "host_artifact_manifest_sha256": "manifest_sha256",
     "host_mutation_authority_sha256": "receipt_sha256",
     "host_mutation_initial_collector_receipt_sha256": "receipt_sha256",
