@@ -32,7 +32,7 @@ def test_skyai_prompt_is_principle_based_not_script_pack() -> None:
 
     assert "Hermes мисли" in prompt
     assert "не е заповед какво да кажеш" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
     assert "SkyAI sales playbook" not in prompt
     assert "do_not_say" not in prompt
     assert "customer_facing_flow" not in prompt
@@ -130,7 +130,7 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "нов ваучер или директен BookNow" in prompt
     assert "конкретна дата/час не доказва BookNow" in prompt
     assert "получателят/доплащащият не става автоматично собственик" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
 
     assert "Existing-voucher top-up campaign entitlement" in architecture
     assert "choosing a concrete date/time does not prove BookNow" in architecture
@@ -161,12 +161,13 @@ def test_voucher_topup_does_not_create_new_campaign_bonus_entitlement() -> None:
     assert "date/time does not prove BookNow" in scenario["focus"]
 
 
+
 def test_universal_value_voucher_is_model_first_prompt_and_evaluation_material() -> None:
     expected_principle = (
-        "При подарък без конкретно преживяване използвай facts за универсалния "
-        "„Подаръчен ваучер на стойност“ и отговори директно, че съществува: купувачът "
-        "избира сумата, а получателят избира преживяването по-късно. Не измисляй и не "
-        "налагай конкретно преживяване; това е моделно разсъждение върху facts, не router или шаблон."
+        'Неконкретен: „Подаръчен ваучер на стойност“ €25/48.89 лв. https://skyvision.bg'
+        '/gift-details/voucher-gift/. Купувачът избира сума; получателят - преживяване '
+        'по-късно; по-скъпо се доплаща, по-евтино остатъкът остава като ваучерна стойно'
+        'ст/нов ваучер. Facts, не router/шаблон.'
     )
     prompt = dev_gateway.build_skyai_system_prompt()
     principles = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
@@ -183,7 +184,10 @@ def test_universal_value_voucher_is_model_first_prompt_and_evaluation_material()
     ]
     assert "universal value voucher exists" in principle["principle"]
     assert "recipient chooses the experience later" in principle["principle"]
-    assert "do not invent or force a selected experience" in principle["principle"]
+    assert "top-up" in principle["principle"]
+    assert "residual" in principle["principle"]
+    assert "original validity" in principle["principle"]
+    assert "https://skyvision.bg/gift-details/voucher-gift/" in principle["principle"]
     assert "not a keyword router or answer template" in principle["principle"]
 
     scenario = next(
@@ -192,6 +196,8 @@ def test_universal_value_voucher_is_model_first_prompt_and_evaluation_material()
     assert scenario["message"] == "Искам да не е конкретен"
     assert "universal value voucher exists" in scenario["focus"]
     assert "non-specific gift" in scenario["focus"]
+    assert "top-up" in scenario["focus"]
+    assert "residual" in scenario["focus"]
     assert "no invented selected experience" in scenario["focus"]
 
 
@@ -251,6 +257,67 @@ def test_customer_reply_contact_distinguishes_automated_sender() -> None:
     assert "not a customer reply channel" in principle["principle"]
 
 
+def test_pilot_provider_phone_is_confirmation_email_context_not_public_page_script() -> None:
+    prompt = dev_gateway.build_skyai_system_prompt()
+    support = public_tools.handle_skyai_support_knowledge(include_contacts=True)
+    architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
+    cases = json.loads(QA_PRINCIPLES_PATH.read_text(encoding="utf-8"))
+    scenarios = json.loads(COMPARE_SCENARIOS_PATH.read_text(encoding="utf-8"))
+
+    assert "пилот/изпълнител/организатор" in prompt
+    assert "след успешна резервация" in prompt
+    assert "имейла за потвърждение" in prompt
+    assert "публичната продуктова страница" in prompt
+    assert "не измисляй публична секция" in prompt
+    assert "номер на пилот" in prompt
+    assert len(prompt) < 6800
+
+    reservation_support = support["reservation_support"]
+    provider_contact = reservation_support["provider_contact_details"]
+    assert provider_contact["available_after_successful_reservation"] is True
+    assert provider_contact["delivery_channel"] == "email"
+    assert provider_contact["source"] == "reservation_confirmation_email"
+    assert provider_contact["public_product_page_contains_direct_phone"] is False
+    assert provider_contact["official_support_contact_available"] is True
+    assert "missing_details_next_step" not in provider_contact
+    assert "customer_safe_summary" not in provider_contact
+    assert "direct_provider_phone" not in json.dumps(provider_contact, ensure_ascii=False)
+
+    assert "Provider/pilot contact details are reservation-confirmation context" in architecture
+    assert "not a public-page section detector" in architecture
+    assert "not a product-specific answer template" in architecture
+
+    principle = next(case for case in cases if case["id"] == "pilot_provider_contact_confirmation_email")
+    assert principle["source_threads"] == ["case:skyai-pilot-phone-confirmation-email-20260804"]
+    assert "successful reservation" in principle["principle"]
+    assert "confirmation email" in principle["principle"]
+    assert "public product page" in principle["principle"]
+    assert "never invent" in principle["principle"]
+
+    scenario = next(case for case in scenarios if case["id"] == "pilot_provider_phone_missing_public_section")
+    assert scenario["history"] == [
+        {
+            "role": "user",
+            "content": "Къде мога да намеря номера на пилота?",
+        },
+        {
+            "role": "user",
+            "content": "Става дума за въвеждащия полет-урок със самолет над Рилски езера.",
+        },
+    ]
+    assert scenario["message"] == "Не намирам такава секция на страницата. Къде е телефонът?"
+    assert "confirmation email" in scenario["focus"]
+    assert "no public page phone/section claim" in scenario["focus"]
+    assert "preserve provider/location/timing/weather public facts" in scenario["focus"]
+
+    positive = next(case for case in scenarios if case["id"] == "pilot_provider_public_facts_still_usable")
+    assert positive["message"] == (
+        "Можеш ли да ми припомниш изпълнителя, локацията и дали трябва да се съобразя с времето?"
+    )
+    assert "provider/location/timing/weather facts remain usable" in positive["focus"]
+    assert "do not suppress public product facts" in positive["focus"]
+
+
 def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     prompt = dev_gateway.build_skyai_system_prompt()
     architecture = " ".join(ARCHITECTURE_PATH.read_text(encoding="utf-8").split())
@@ -262,7 +329,7 @@ def test_reservation_voucher_path_ambiguity_is_hermes_principle() -> None:
     assert "директен BookNow/карта само без ваучер" in prompt
     assert "Не твърди задължителни UI стъпки" in prompt
     assert "tool/public evidence" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
 
     assert "Reservation path ambiguity is Hermes reasoning context" in architecture
     assert "not a runtime intent router" in architecture
@@ -355,7 +422,7 @@ def test_minimum_reservation_anxiety_uses_model_verified_alternative_principle()
     assert "друг изпълнител" in prompt
     assert "само по себе си" in prompt
     assert "няма проверена алтернатива" in prompt
-    assert len(prompt) < 6500
+    assert len(prompt) < 6800
 
     assert "Minimum-reservation anxiety is Hermes reasoning context" in architecture
     assert "not a keyword classifier" in architecture
@@ -488,14 +555,23 @@ def test_customer_tools_return_facts_not_instruction_keys() -> None:
         public_tools.handle_skyai_campaign_knowledge(),
         public_tools.handle_skyai_support_knowledge(include_contacts=True),
     ]
+    forbidden_instruction_or_reply_keys = {
+        "answer_guidance",
+        "guidance",
+        "missing_details_next_step",
+        "customer_safe_summary",
+        "recommended_action",
+        "recommended_response",
+        "ready_made_reply",
+        "reply_template",
+        "when_to_use",
+        "customer_facing_flow",
+    }
 
     for payload in payloads:
         keys = _payload_keys(payload)
-        assert "answer_guidance" not in keys
-        assert "guidance" not in keys
+        assert keys.isdisjoint(forbidden_instruction_or_reply_keys)
         assert not any(key.endswith("_guidance") for key in keys)
-        assert "when_to_use" not in keys
-        assert "customer_facing_flow" not in keys
 
 
 def test_catalog_tool_has_no_backend_persona_or_keyword_policy() -> None:

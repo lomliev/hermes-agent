@@ -226,6 +226,21 @@
     ]
   },
   {
+    "id": "universal_value_voucher_non_specific_gift",
+    "source_threads": [
+      "case:skyai-voucher-value-20260807-1535227388445720779"
+    ],
+    "principle": "When a customer wants a gift that is not tied to a specific experience, answer directly that SkyVision's universal value voucher exists. The buyer selects the sum and the recipient chooses the experience later; use https://skyvision.bg/gift-details/voucher-gift/, starting price, top-up, residual voucher, and original validity facts from the dedicated support fact pack. Do not invent or force a selected experience. This is model reasoning over facts, not a keyword router or answer template.",
+    "scoring": [
+      "universal_voucher_recognition",
+      "non_specific_gift_intent",
+      "fact_pack_use",
+      "top_up_and_residual_accuracy",
+      "no_invented_experience",
+      "model_first_reasoning"
+    ]
+  },
+  {
     "id": "voucher_issuer_boundary",
     "source_threads": [
       "1530167380133544067",
@@ -251,6 +266,20 @@
       "contact_accuracy",
       "support_accuracy",
       "next_step_clarity"
+    ]
+  },
+  {
+    "id": "pilot_provider_contact_confirmation_email",
+    "source_threads": [
+      "case:skyai-pilot-phone-confirmation-email-20260804"
+    ],
+    "principle": "When a customer asks for a pilot, provider, executor, or organizer phone/contact, explain that direct contact details are supplied after successful reservation in the reservation confirmation email/details. Public product page facts such as provider name, location, timing, or weather-call instructions are still usable, but they do not by themselves prove a public product page phone or section. If the confirmation email/details are missing, suggest checking inbox/spam and contacting official SkyVision support with reservation number/context. never invent or expose an unverified pilot/provider phone.",
+    "scoring": [
+      "reservation_contact_accuracy",
+      "evidence_uncertainty",
+      "no_unverified_phone",
+      "support_next_step",
+      "public_product_fact_preservation"
     ]
   },
   {
@@ -310,20 +339,6 @@
       "provider_boundary",
       "material_caveats",
       "no_overpromise"
-    ]
-  },
-  {
-    "id": "universal_value_voucher_non_specific_gift",
-    "source_threads": [
-      "case:skyai-voucher-value-20260807-1535227388445720779"
-    ],
-    "principle": "When a customer wants a gift that is not tied to a specific experience, answer directly that SkyVision's universal value voucher exists. The buyer selects the sum and the recipient chooses the experience later; do not invent or force a selected experience. Use the dedicated support fact pack for the current title, public URL, starting price, top-up, residual-value, and validity facts. This is model reasoning over facts, not a keyword router or answer template.",
-    "scoring": [
-      "universal_voucher_recognition",
-      "non_specific_gift_intent",
-      "fact_pack_use",
-      "no_invented_experience",
-      "model_first_reasoning"
     ]
   },
   {

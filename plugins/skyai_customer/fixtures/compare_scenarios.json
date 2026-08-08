@@ -40,7 +40,7 @@
         "content": "Искам да подаря ваучер за преживяване."
       }
     ],
-    "focus": "answer directly that a universal value voucher exists for a non-specific gift; buyer selects the sum and recipient selects the experience later; use the support fact pack; no invented selected experience, keyword router, or answer template"
+    "focus": "answer directly that a universal value voucher exists for a non-specific gift; buyer selects the sum and recipient chooses the experience later; include public URL, starting price, top-up and residual/original-validity facts; use the support fact pack; no invented selected experience, keyword router, or answer template"
   },
   {
     "id": "prohodna_bungee_minimum_anxiety",
@@ -107,6 +107,36 @@
     "id": "reservation_reply_contact",
     "message": "На кой имейл да пиша за проблем с резервацията?",
     "focus": "give info@skyvision.bg as the customer reply contact; do not present the automated reservations notification address as a reply channel"
+  },
+  {
+    "id": "pilot_provider_phone_missing_public_section",
+    "message": "Не намирам такава секция на страницата. Къде е телефонът?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Къде мога да намеря номера на пилота?"
+      },
+      {
+        "role": "user",
+        "content": "Става дума за въвеждащия полет-урок със самолет над Рилски езера."
+      }
+    ],
+    "focus": "multi-turn pilot/provider contact question: explain direct contact details come after successful reservation in the confirmation email/details; no public page phone/section claim and no unverified number; if missing, check inbox/spam and contact official SkyVision support with reservation number/context; preserve provider/location/timing/weather public facts when separately verified"
+  },
+  {
+    "id": "pilot_provider_public_facts_still_usable",
+    "message": "Можеш ли да ми припомниш изпълнителя, локацията и дали трябва да се съобразя с времето?",
+    "history": [
+      {
+        "role": "user",
+        "content": "Интересувам се от въвеждащия полет-урок със самолет над Рилски езера."
+      },
+      {
+        "role": "user",
+        "content": "Не искам телефон, само публичните детайли."
+      }
+    ],
+    "focus": "adjacent positive coverage: provider/location/timing/weather facts remain usable from public product evidence; do not suppress public product facts while still not inventing direct pilot/provider phone"
   },
   {
     "id": "reservation_voucher_path_ambiguity",

@@ -698,6 +698,12 @@ def test_campaign_knowledge_returns_public_sales_and_terms_facts() -> None:
     assert campaign["campaign_2026_facts"]["archive_2025_url"] == (
         "https://skyvision.bg/campaign/free-panoramic-flight-2025/"
     )
+    campaign_2026_facts_evidence = json.dumps(campaign["campaign_2026_facts"], ensure_ascii=False)
+    active_campaign_evidence = json.dumps(campaign, ensure_ascii=False)
+    assert "31.08.2026" in campaign["campaign_2026_facts"]["period"]
+    for evidence in (campaign_2026_facts_evidence, active_campaign_evidence):
+        assert "до изчерпване на капацитета" not in evidence
+        assert "500 полета" not in evidence
     assert campaign["campaign_2026_facts"]["validity"] == "12 месеца от датата на покупката"
     assert "независимо къде се изпълнява основната" in (
         campaign["campaign_2026_facts"]["main_service_location_independent"]
@@ -743,7 +749,9 @@ def test_campaign_knowledge_returns_public_sales_and_terms_facts() -> None:
     assert "избере нов свободен таймслот" in reservation["weather_rebooking"]
     assert reservation["normal_booking_method"] == "profile_vouchers_reserve_button"
     assert reservation["support_escalation_when_missing"] == (
-        "ако бонусът, профилната връзка или бутонът „Резервирай“ липсват, насочи към официалната поддръжка за проверка по акаунта без публично искане на пълни идентификатори"
+        "ако бонусът, профилната връзка или бутонът „Резервирай“ липсват, "
+        "насочи към официалната поддръжка за проверка по акаунта без публично "
+        "искане на пълни идентификатори"
     )
     assert "клиентът пита" in result["founder_transfer_facts"]["context"]
     founder_facts = result["founder_transfer_facts"]["facts"]
@@ -914,8 +922,9 @@ def test_support_knowledge_returns_public_commerce_and_voucher_facts() -> None:
     assert "+359 (0) 700 20 200" in result["official_contacts"]["phones"]
 
 
+
 def test_support_knowledge_exposes_universal_value_voucher_facts() -> None:
-    result = public_tools.handle_skyai_support_knowledge()
+    result = public_tools.handle_skyai_support_knowledge(topic="Искам да не е конкретен")
 
     facts = result["vouchers"]["universal_value_voucher"]
     assert facts["canonical_title"] == "Подаръчен ваучер на стойност"
@@ -929,6 +938,7 @@ def test_support_knowledge_exposes_universal_value_voucher_facts() -> None:
     assert facts["higher_price_requires_top_up"] is True
     assert facts["lower_price_creates_residual_voucher"] is True
     assert facts["residual_voucher_keeps_original_validity"] is True
+    assert facts["source"] == "verified_public_voucher_gift_page"
     assert not any(
         marker in key
         for key in facts

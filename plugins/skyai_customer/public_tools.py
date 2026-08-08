@@ -555,8 +555,7 @@ def handle_skyai_campaign_knowledge(
                         "https://skyvision.bg/подарък/полет-с-жирокоптер/панорамен-полет-над-морето/"
                     ),
                     "archive_2025_url": "https://skyvision.bg/campaign/free-panoramic-flight-2025/",
-                    "period": "от 1 април 2026 г. до изчерпване на капацитета",
-                    "capacity": "500 полета през активния период",
+                    "period": "от 1 април 2026 г. до 31.08.2026",
                     "validity": "12 месеца от датата на покупката",
                     "how_customer_gets_it": "появява се автоматично в секция „Ваучери“ в профила",
                     "gift_entitlement_profile_linking": {
@@ -587,20 +586,28 @@ def handle_skyai_campaign_knowledge(
                             "завършете онлайн резервацията",
                         ],
                         "booknow_unlock_rule": (
-                            "ако бонусът е получен от BookNow, той става достъпен за резервация след изпълнение на основната услуга"
+                            "ако бонусът е получен от BookNow, той става достъпен за резервация "
+                            "след изпълнение на основната услуга"
                         ),
-                        "reserve_before_timeslot": "резервацията се прави най-късно 24 часа преди избрания таймслот",
+                        "reserve_before_timeslot": (
+                            "резервацията се прави най-късно 24 часа преди избрания таймслот"
+                        ),
                         "self_service_cancel_before_timeslot": (
                             "клиентът може сам да откаже резервацията най-късно 72 часа преди таймслота"
                         ),
                         "weather_rebooking": (
-                            "ако полетът отпадне заради лошо време или форсмажор, клиентът се връща в резервационната система и избере нов свободен таймслот в рамките на валидността"
+                            "ако полетът отпадне заради лошо време или форсмажор, клиентът се връща "
+                            "в резервационната система и избере нов свободен таймслот в рамките на валидността"
                         ),
                         "normal_booking_method": "profile_vouchers_reserve_button",
-                        "not_normal_booking_method": "контакт с пилота не е нормалният начин за резервиране на бонуса",
+                        "not_normal_booking_method": (
+                            "контакт с пилота не е нормалният начин за резервиране на бонуса"
+                        ),
                         "no_public_identifier_request": True,
                         "support_escalation_when_missing": (
-                            "ако бонусът, профилната връзка или бутонът „Резервирай“ липсват, насочи към официалната поддръжка за проверка по акаунта без публично искане на пълни идентификатори"
+                            "ако бонусът, профилната връзка или бутонът „Резервирай“ липсват, "
+                            "насочи към официалната поддръжка за проверка по акаунта без публично "
+                            "искане на пълни идентификатори"
                         ),
                     },
                     "not_lottery": "без томбола и без игра на късмета",
@@ -821,6 +828,13 @@ def handle_skyai_support_knowledge(
                 "monitored": True,
                 "accepts_customer_replies": False,
             },
+            "provider_contact_details": {
+                "available_after_successful_reservation": True,
+                "delivery_channel": "email",
+                "source": "reservation_confirmation_email",
+                "public_product_page_contains_direct_phone": False,
+                "official_support_contact_available": True,
+            },
             "customer_profile_section": "Профил -> Резервации",
             "self_service_cancel_action": "Анулиране на резервацията",
             "customer_cancel_endpoint_pattern": "POST reservation/cancel/<voucher>",
@@ -851,6 +865,7 @@ def handle_skyai_support_knowledge(
             "universal_value_voucher": {
                 "canonical_title": "Подаръчен ваучер на стойност",
                 "public_url": "https://skyvision.bg/gift-details/voucher-gift/",
+                "source": "verified_public_voucher_gift_page",
                 "universal": True,
                 "non_specific": True,
                 "buyer_selects_sum": True,
