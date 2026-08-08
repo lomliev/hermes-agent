@@ -128,6 +128,7 @@ def _phase_evidence(
     startup_oneshot_count = inventory["expected_startup_oneshot_service_unit_count"]
     trigger_count = inventory["expected_trigger_unit_count"]
     safety_identities = runtime.runtime_safety.structural_receipt_identities()
+    safety_counts = runtime.runtime_safety.structural_receipt_counts()
 
     if phase == "candidate_validated":
         return {
@@ -155,7 +156,7 @@ def _phase_evidence(
             "observed_active_revision": predecessor,
             "healthy_voice_target_count": initial.get(
                 "healthy_voice_target_count",
-                2,
+                safety_counts["protected_voice_service_count"],
             ),
             "all_required_voice_targets_healthy": True,
         }
@@ -302,7 +303,9 @@ def _phase_evidence(
                 "target_process_set_sha256"
             ],
             "observed_target_revision": release,
-            "validated_endpoint_count": 4,
+            "validated_endpoint_count": safety_counts[
+                "precommit_probe_count"
+            ],
             "validated_connector_count": 0,
             "runtime_safety_plan_sha256": intent[
                 "runtime_safety_plan_sha256"
@@ -451,6 +454,9 @@ def _phase_evidence(
             "ingress_gate_receipt_sha256": _digest(
                 "postcommit-ingress-gate"
             ),
+            "validated_postcommit_probe_count": safety_counts[
+                "postcommit_probe_count"
+            ],
             "all_expected_consumers_enabled": True,
         }
     if phase in {"terminal_validated", "completed_revalidated"}:
@@ -478,6 +484,9 @@ def _phase_evidence(
             "ingress_gate_receipt_sha256": _digest(
                 "postcommit-ingress-gate"
             ),
+            "validated_postcommit_probe_count": safety_counts[
+                "postcommit_probe_count"
+            ],
             "all_required_health_checks_passed": True,
         }
         if phase == "completed_revalidated":
@@ -1127,6 +1136,11 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "f" * 64,
         ),
         (
+            "voice_guard_initial",
+            "healthy_voice_target_count",
+            2,
+        ),
+        (
             "target_started_disabled",
             "precommit_service_set_sha256",
             "f" * 64,
@@ -1155,6 +1169,11 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "target_health_validated",
             "precommit_probe_catalog_sha256",
             "f" * 64,
+        ),
+        (
+            "target_health_validated",
+            "validated_endpoint_count",
+            1,
         ),
         (
             "unit_inputs_prepared",
@@ -1225,6 +1244,11 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "target_consumers_enabled",
             "enabled_trigger_set_sha256",
             "f" * 64,
+        ),
+        (
+            "target_consumers_enabled",
+            "validated_postcommit_probe_count",
+            1,
         ),
         (
             "target_started_disabled",

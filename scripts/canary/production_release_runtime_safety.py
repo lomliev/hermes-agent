@@ -465,6 +465,16 @@ def structural_receipt_identities() -> Mapping[str, str]:
     }
 
 
+def structural_receipt_counts() -> Mapping[str, int]:
+    """Return exact counts paired with the catalog-derived receipt digests."""
+
+    return {
+        "protected_voice_service_count": 1,
+        "precommit_probe_count": len(_precommit_health_probes()),
+        "postcommit_probe_count": len(_postcommit_health_probes()),
+    }
+
+
 def build_runtime_safety_plan(
     *,
     predecessor_revision: str,
@@ -570,5 +580,6 @@ __all__ = [
     "VOICE_GUARD_RECEIPT_SCHEMA",
     "build_runtime_safety_plan",
     "structural_receipt_identities",
+    "structural_receipt_counts",
     "validate_runtime_safety_plan",
 ]

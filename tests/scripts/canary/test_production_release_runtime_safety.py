@@ -181,6 +181,14 @@ def test_structural_receipt_identities_are_exact_catalog_derivatives() -> None:
         ),
     }
 
+    assert safety.structural_receipt_counts() == {
+        "protected_voice_service_count": len(
+            plan["protected_voice_service_units"]
+        ),
+        "precommit_probe_count": len(plan["precommit_health_probes"]),
+        "postcommit_probe_count": len(plan["postcommit_health_probes"]),
+    }
+
 
 @pytest.mark.parametrize(
     ("field", "replacement"),

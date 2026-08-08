@@ -313,6 +313,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "public_start_order_sha256",
         "enabled_trigger_set_sha256",
         "ingress_gate_receipt_sha256",
+        "validated_postcommit_probe_count",
         "all_expected_consumers_enabled",
     }),
     "terminal_validated": frozenset({
@@ -331,6 +332,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "postcommit_probe_catalog_sha256",
         "enabled_trigger_set_sha256",
         "ingress_gate_receipt_sha256",
+        "validated_postcommit_probe_count",
         "all_required_health_checks_passed",
     }),
     "target_stopped": frozenset({
@@ -409,6 +411,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "postcommit_probe_catalog_sha256",
         "enabled_trigger_set_sha256",
         "ingress_gate_receipt_sha256",
+        "validated_postcommit_probe_count",
         "all_required_health_checks_passed",
     }),
     "rolled_back_revalidated": frozenset({
@@ -914,6 +917,7 @@ def _validate_action_evidence(
     predecessor = str(intent["predecessor_revision"])
     release = str(intent["release_revision"])
     safety_identities = runtime_safety.structural_receipt_identities()
+    safety_counts = runtime_safety.structural_receipt_counts()
 
     if phase == "candidate_validated":
         _require_action(
@@ -947,6 +951,9 @@ def _validate_action_evidence(
             positive=True,
         )
         _true_field(receipt, "all_required_voice_targets_healthy")
+        _require_action(
+            healthy_count == safety_counts["protected_voice_service_count"]
+        )
         if phase == "voice_guard_final":
             initial = _receipt_for_evidence(
                 receipts,
@@ -1241,7 +1248,10 @@ def _validate_action_evidence(
             and _sha_field(receipt, "session_drain_receipt_sha256")
             == started.get("session_drain_receipt_sha256")
         )
-        _count_field(receipt, "validated_endpoint_count", positive=True)
+        _require_action(
+            _count_field(receipt, "validated_endpoint_count", positive=True)
+            == safety_counts["precommit_probe_count"]
+        )
         _require_action(_count_field(receipt, "validated_connector_count") == 0)
         _require_action(
             _sha_field(receipt, "precommit_probe_catalog_sha256")
@@ -1506,6 +1516,14 @@ def _validate_action_evidence(
             _sha_field(receipt, "ingress_gate_receipt_sha256")
             != precommit_health.get("ingress_gate_receipt_sha256")
         )
+        _require_action(
+            _count_field(
+                receipt,
+                "validated_postcommit_probe_count",
+                positive=True,
+            )
+            == safety_counts["postcommit_probe_count"]
+        )
         _true_field(receipt, "all_expected_consumers_enabled")
         return
 
@@ -1559,6 +1577,12 @@ def _validate_action_evidence(
             == enabled.get("enabled_trigger_set_sha256")
             and _sha_field(receipt, "ingress_gate_receipt_sha256")
             == enabled.get("ingress_gate_receipt_sha256")
+            and _count_field(
+                receipt,
+                "validated_postcommit_probe_count",
+                positive=True,
+            )
+            == enabled.get("validated_postcommit_probe_count")
         )
         _true_field(receipt, "all_required_health_checks_passed")
         return
