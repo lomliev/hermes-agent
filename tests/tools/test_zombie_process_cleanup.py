@@ -462,6 +462,35 @@ class TestDelegationCleanup:
         child_started = threading.Event()
         release_child = threading.Event()
         child_finished = threading.Event()
+
+        # Start the real timeout clock only after the executor worker has
+        # entered the child turn.  Without this synchronization, a loaded CI
+        # runner can spend the entire 0.1s timeout scheduling the worker and
+        # make the test assert on a child that never started.  The wrapped
+        # future still delegates to Future.result(timeout=0.1), so this test
+        # exercises the production timeout path against an active child.
+        from tools import daemon_pool
+
+        real_submit = daemon_pool.DaemonThreadPoolExecutor.submit
+
+        class StartSynchronizedFuture:
+            def __init__(self, future):
+                self._future = future
+
+            def result(self, timeout=None):
+                if not child_started.wait(timeout=5):
+                    raise AssertionError("child worker did not start")
+                return self._future.result(timeout=timeout)
+
+        def start_synchronized_submit(executor, *args, **kwargs):
+            return StartSynchronizedFuture(real_submit(executor, *args, **kwargs))
+
+        monkeypatch.setattr(
+            daemon_pool.DaemonThreadPoolExecutor,
+            "submit",
+            start_synchronized_submit,
+        )
+
         parent = MagicMock()
         parent._active_children = []
         parent._active_children_lock = threading.Lock()
