@@ -153,6 +153,35 @@ def test_runtime_safety_plan_binds_gateway_and_connector_session_drain() -> None
     assert drain["caller_boolean_accepted"] is False
 
 
+def test_structural_receipt_identities_are_exact_catalog_derivatives() -> None:
+    plan = _plan()
+    identities = safety.structural_receipt_identities()
+
+    assert identities == {
+        "protected_service_set_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["protected_voice_service_units"])
+        ),
+        "precommit_service_set_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["precommit_long_running_service_units"])
+        ),
+        "disabled_trigger_set_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["precommit_disabled_trigger_units"])
+        ),
+        "enabled_trigger_set_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["postcommit_enabled_trigger_units"])
+        ),
+        "precommit_probe_catalog_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["precommit_health_probes"])
+        ),
+        "postcommit_probe_catalog_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["postcommit_health_probes"])
+        ),
+        "public_start_order_sha256": safety.sha256_bytes(
+            safety.canonical_bytes(plan["postcommit_public_start_order"])
+        ),
+    }
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [

@@ -127,6 +127,7 @@ def _phase_evidence(
     long_running_count = inventory["expected_long_running_service_unit_count"]
     startup_oneshot_count = inventory["expected_startup_oneshot_service_unit_count"]
     trigger_count = inventory["expected_trigger_unit_count"]
+    safety_identities = runtime.runtime_safety.structural_receipt_identities()
 
     if phase == "candidate_validated":
         return {
@@ -146,7 +147,7 @@ def _phase_evidence(
             "voice_guard_observation_sha256": _digest(f"{phase}-observation"),
             "protected_service_set_sha256": initial.get(
                 "protected_service_set_sha256",
-                _digest("protected-voice-services"),
+                safety_identities["protected_service_set_sha256"],
             ),
             "runtime_safety_plan_sha256": intent[
                 "runtime_safety_plan_sha256"
@@ -279,12 +280,12 @@ def _phase_evidence(
             "runtime_safety_plan_sha256": intent[
                 "runtime_safety_plan_sha256"
             ],
-            "precommit_service_set_sha256": _digest(
-                "precommit-service-set"
-            ),
-            "disabled_trigger_set_sha256": _digest(
-                "disabled-trigger-set"
-            ),
+            "precommit_service_set_sha256": safety_identities[
+                "precommit_service_set_sha256"
+            ],
+            "disabled_trigger_set_sha256": safety_identities[
+                "disabled_trigger_set_sha256"
+            ],
             "session_drain_receipt_sha256": _digest(
                 "session-drain-receipt"
             ),
@@ -306,9 +307,9 @@ def _phase_evidence(
             "runtime_safety_plan_sha256": intent[
                 "runtime_safety_plan_sha256"
             ],
-            "precommit_probe_catalog_sha256": _digest(
-                "precommit-probe-catalog"
-            ),
+            "precommit_probe_catalog_sha256": safety_identities[
+                "precommit_probe_catalog_sha256"
+            ],
             "session_drain_receipt_sha256": receipts[
                 "target_started_disabled"
             ]["session_drain_receipt_sha256"],
@@ -438,10 +439,15 @@ def _phase_evidence(
             "runtime_safety_plan_sha256": intent[
                 "runtime_safety_plan_sha256"
             ],
-            "postcommit_probe_catalog_sha256": _digest(
-                "postcommit-probe-catalog"
-            ),
-            "public_start_order_sha256": _digest("public-start-order"),
+            "postcommit_probe_catalog_sha256": safety_identities[
+                "postcommit_probe_catalog_sha256"
+            ],
+            "public_start_order_sha256": safety_identities[
+                "public_start_order_sha256"
+            ],
+            "enabled_trigger_set_sha256": safety_identities[
+                "enabled_trigger_set_sha256"
+            ],
             "ingress_gate_receipt_sha256": _digest(
                 "postcommit-ingress-gate"
             ),
@@ -463,9 +469,12 @@ def _phase_evidence(
             "runtime_safety_plan_sha256": intent[
                 "runtime_safety_plan_sha256"
             ],
-            "postcommit_probe_catalog_sha256": _digest(
-                "postcommit-probe-catalog"
-            ),
+            "postcommit_probe_catalog_sha256": safety_identities[
+                "postcommit_probe_catalog_sha256"
+            ],
+            "enabled_trigger_set_sha256": safety_identities[
+                "enabled_trigger_set_sha256"
+            ],
             "ingress_gate_receipt_sha256": _digest(
                 "postcommit-ingress-gate"
             ),
@@ -1113,6 +1122,21 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "f" * 64,
         ),
         (
+            "voice_guard_initial",
+            "protected_service_set_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_started_disabled",
+            "precommit_service_set_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_started_disabled",
+            "disabled_trigger_set_sha256",
+            "f" * 64,
+        ),
+        (
             "target_health_validated",
             "validated_connector_count",
             1,
@@ -1125,6 +1149,11 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
         (
             "target_health_validated",
             "session_drain_receipt_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_health_validated",
+            "precommit_probe_catalog_sha256",
             "f" * 64,
         ),
         (
@@ -1181,6 +1210,21 @@ def test_action_receipts_reject_missing_extra_and_stale_context() -> None:
             "target_consumers_enabled",
             "ingress_gate_receipt_sha256",
             _digest("precommit-ingress-gate"),
+        ),
+        (
+            "target_consumers_enabled",
+            "postcommit_probe_catalog_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_consumers_enabled",
+            "public_start_order_sha256",
+            "f" * 64,
+        ),
+        (
+            "target_consumers_enabled",
+            "enabled_trigger_set_sha256",
+            "f" * 64,
         ),
         (
             "target_started_disabled",

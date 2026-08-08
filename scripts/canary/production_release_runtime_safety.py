@@ -426,6 +426,45 @@ def _external_ingress_gate() -> dict[str, Any]:
     }
 
 
+def structural_receipt_identities() -> Mapping[str, str]:
+    """Return exact catalog-derived identities used by live action receipts.
+
+    A syntactically valid SHA-256 is not evidence that the host action observed
+    the cohort or probe catalog authorized by the runtime-safety plan.  Keep
+    these identities mechanically derived from the same closed catalog as the
+    plan so the transaction runtime can reject substitution without trusting a
+    caller-authored label or boolean.
+    """
+
+    long_running = _long_running_units()
+    public_ingress = list(PUBLIC_INGRESS_SERVICE_UNITS)
+    precommit = sorted(set(long_running).difference(public_ingress))
+    triggers = _trigger_units()
+    return {
+        "protected_service_set_sha256": sha256_bytes(
+            canonical_bytes([GATEWAY_UNIT])
+        ),
+        "precommit_service_set_sha256": sha256_bytes(
+            canonical_bytes(precommit)
+        ),
+        "disabled_trigger_set_sha256": sha256_bytes(
+            canonical_bytes(triggers)
+        ),
+        "enabled_trigger_set_sha256": sha256_bytes(
+            canonical_bytes(triggers)
+        ),
+        "precommit_probe_catalog_sha256": sha256_bytes(
+            canonical_bytes(_precommit_health_probes())
+        ),
+        "postcommit_probe_catalog_sha256": sha256_bytes(
+            canonical_bytes(_postcommit_health_probes())
+        ),
+        "public_start_order_sha256": sha256_bytes(
+            canonical_bytes([CONNECTOR_UNIT, GATEWAY_UNIT])
+        ),
+    }
+
+
 def build_runtime_safety_plan(
     *,
     predecessor_revision: str,
@@ -530,5 +569,6 @@ __all__ = [
     "VOICE_CALL_LEASE_TOOL_PATH",
     "VOICE_GUARD_RECEIPT_SCHEMA",
     "build_runtime_safety_plan",
+    "structural_receipt_identities",
     "validate_runtime_safety_plan",
 ]

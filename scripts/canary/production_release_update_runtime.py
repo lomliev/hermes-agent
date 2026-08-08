@@ -311,6 +311,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "runtime_safety_plan_sha256",
         "postcommit_probe_catalog_sha256",
         "public_start_order_sha256",
+        "enabled_trigger_set_sha256",
         "ingress_gate_receipt_sha256",
         "all_expected_consumers_enabled",
     }),
@@ -328,6 +329,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "terminal_health_observation_sha256",
         "runtime_safety_plan_sha256",
         "postcommit_probe_catalog_sha256",
+        "enabled_trigger_set_sha256",
         "ingress_gate_receipt_sha256",
         "all_required_health_checks_passed",
     }),
@@ -405,6 +407,7 @@ _ACTION_RECEIPT_EVIDENCE_FIELDS: Mapping[str, frozenset[str]] = {
         "terminal_health_observation_sha256",
         "runtime_safety_plan_sha256",
         "postcommit_probe_catalog_sha256",
+        "enabled_trigger_set_sha256",
         "ingress_gate_receipt_sha256",
         "all_required_health_checks_passed",
     }),
@@ -910,6 +913,7 @@ def _validate_action_evidence(
 ) -> None:
     predecessor = str(intent["predecessor_revision"])
     release = str(intent["release_revision"])
+    safety_identities = runtime_safety.structural_receipt_identities()
 
     if phase == "candidate_validated":
         _require_action(
@@ -932,6 +936,8 @@ def _validate_action_evidence(
         _require_action(
             _sha_field(receipt, "runtime_safety_plan_sha256")
             == intent["runtime_safety_plan_sha256"]
+            and protected_set
+            == safety_identities["protected_service_set_sha256"]
             and _revision_field(receipt, "observed_active_revision")
             == predecessor
         )
@@ -1203,8 +1209,12 @@ def _validate_action_evidence(
             == intent["runtime_safety_plan_sha256"]
         )
         _sha_field(receipt, "target_process_set_sha256")
-        _sha_field(receipt, "precommit_service_set_sha256")
-        _sha_field(receipt, "disabled_trigger_set_sha256")
+        _require_action(
+            _sha_field(receipt, "precommit_service_set_sha256")
+            == safety_identities["precommit_service_set_sha256"]
+            and _sha_field(receipt, "disabled_trigger_set_sha256")
+            == safety_identities["disabled_trigger_set_sha256"]
+        )
         _sha_field(receipt, "session_drain_receipt_sha256")
         _sha_field(receipt, "ingress_gate_receipt_sha256")
         _true_field(receipt, "target_runtime_classes_ready")
@@ -1233,7 +1243,10 @@ def _validate_action_evidence(
         )
         _count_field(receipt, "validated_endpoint_count", positive=True)
         _require_action(_count_field(receipt, "validated_connector_count") == 0)
-        _sha_field(receipt, "precommit_probe_catalog_sha256")
+        _require_action(
+            _sha_field(receipt, "precommit_probe_catalog_sha256")
+            == safety_identities["precommit_probe_catalog_sha256"]
+        )
         _true_field(receipt, "all_required_health_checks_passed")
         return
 
@@ -1481,8 +1494,14 @@ def _validate_action_evidence(
             and _sha_field(receipt, "runtime_safety_plan_sha256")
             == intent["runtime_safety_plan_sha256"]
         )
-        _sha_field(receipt, "postcommit_probe_catalog_sha256")
-        _sha_field(receipt, "public_start_order_sha256")
+        _require_action(
+            _sha_field(receipt, "postcommit_probe_catalog_sha256")
+            == safety_identities["postcommit_probe_catalog_sha256"]
+            and _sha_field(receipt, "public_start_order_sha256")
+            == safety_identities["public_start_order_sha256"]
+            and _sha_field(receipt, "enabled_trigger_set_sha256")
+            == safety_identities["enabled_trigger_set_sha256"]
+        )
         _require_action(
             _sha_field(receipt, "ingress_gate_receipt_sha256")
             != precommit_health.get("ingress_gate_receipt_sha256")
@@ -1536,6 +1555,8 @@ def _validate_action_evidence(
         _require_action(
             _sha_field(receipt, "postcommit_probe_catalog_sha256")
             == enabled.get("postcommit_probe_catalog_sha256")
+            and _sha_field(receipt, "enabled_trigger_set_sha256")
+            == enabled.get("enabled_trigger_set_sha256")
             and _sha_field(receipt, "ingress_gate_receipt_sha256")
             == enabled.get("ingress_gate_receipt_sha256")
         )
